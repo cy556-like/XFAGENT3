@@ -146,7 +146,7 @@ def create_llm(deep_think: bool = False, fast_mode: bool = False):
         temperature=temperature,
         streaming=True,
         max_tokens=8192,
-        request_timeout=60,
+        request_timeout=120,  # 超时保护：120秒，长提示词需要更多时间
     )
     _llm_cache[cache_key] = llm
     logger.info(f"LLM Client 已创建并缓存: model={model}, 缓存数量={len(_llm_cache)}")
@@ -280,13 +280,10 @@ def _build_agent_prompt(agent_task: str, web_search: bool = False) -> str:
 3. 如果知识库检索无结果，可以补充自身知识，但**必须明确标注**：「以下内容非来自知识库，仅供参考」
 4. **绝对禁止**在未检索知识库的情况下，直接用自己的知识回答专业问题
 
-### 搜索效率规则（强制！避免思考过久）
-1. **同一主题只搜1次**：用组合关键词一次搜完，不要拆成多次搜索
-   - ✅ 正确：search_documents_tool(query="DFMEA表格结构 评级标准 措施优先级 AP值")
-   - ❌ 错误：先搜"DFMEA"，再搜"评级标准"，再搜"AP值"（3次搜索同一主题）
-2. **每轮对话最多搜索3次知识库**，超过后系统会拦截
-3. **信息足够就回答**：搜索已返回相关结果时，直接基于结果回答，不要为了"更全面"再搜
-4. **生成文档/表格时**：1次搜索获取模板/标准，然后直接生成，不要反复搜索确认细节
+### 搜索效率规则
+- 同一主题只搜1次，用组合关键词，不要拆成多次搜索
+- 每轮最多搜索3次，信息足够就回答
+- 生成文档时搜1次拿模板后直接生成
 
 ### 判断标准
 - 必须检索知识库的问题：与你的角色定义、专业领域、公司制度/流程/规范/标准相关的问题

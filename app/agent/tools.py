@@ -125,25 +125,26 @@ _tool_cache = ToolCache(max_size=100, default_ttl=300)
 # ===== 搜索效率控制 =====
 # 每轮对话的最大文档搜索次数（超过后返回提示，让LLM直接使用已有信息回答）
 _MAX_SEARCH_PER_TURN = 3
-_search_count_per_turn = 0  # 当前轮的搜索计数
+
+# 使用 contextvars 而非全局变量，支持并发请求隔离
+_search_count_var: contextvars.ContextVar[int] = contextvars.ContextVar('search_count', default=0)
 
 
 def reset_search_count():
     """重置搜索计数（每次新对话轮次开始时调用）"""
-    global _search_count_per_turn
-    _search_count_per_turn = 0
+    _search_count_var.set(0)
 
 
 def increment_search_count() -> int:
     """递增搜索计数并返回当前值"""
-    global _search_count_per_turn
-    _search_count_per_turn += 1
-    return _search_count_per_turn
+    current = _search_count_var.get(0) + 1
+    _search_count_var.set(current)
+    return current
 
 
 def get_search_count() -> int:
     """获取当前搜索计数"""
-    return _search_count_per_turn
+    return _search_count_var.get(0)
 
 
 def cached_tool(ttl: int = 300, include_agent_id: bool = True):
@@ -292,7 +293,7 @@ def search_documents_tool(query: str) -> str:
     # 按 agent_id 隔离知识库：智能体只搜索自己的知识库
     # 普通聊天模式（agent_id=None）没有知识库
     current_aid = get_current_agent_id()
-    logger.debug(f"搜索文档: query={query}, agent_id={current_aid}, 本轮第{get_search_count()+1}次搜索")
+    logger.debug(f"搜索文档: query={query}, agent_id={current_aid}")
 
     # 普通聊天模式没有知识库
     if not current_aid:
@@ -302,10 +303,10 @@ def search_documents_tool(query: str) -> str:
     current_count = increment_search_count()
     if current_count > _MAX_SEARCH_PER_TURN:
         logger.info(f"搜索效率控制：本轮已搜索 {current_count-1} 次，超过上限 {_MAX_SEARCH_PER_TURN}，提示LLM直接回答")
-        return f"【检索提示】你已经搜索了 {current_count-1} 次知识库，已获取了足够的信息。请**直接基于已有检索结果回答用户问题**，不要再调用搜索工具。如果之前搜索未找到相关信息，请用自己的知识补充并标注。"
+        return f"【检索提示】已搜索{current_count-1}次，请直接基于已有结果回答，不要再搜索。"
     
     try:
-        results = search_documents(query, top_k=10, agent_id=current_aid)  # 从8提升到10，获取更多候选结果
+        results = search_documents(query, top_k=8, agent_id=current_aid)  # 保持8，过多结果增加上下文长度拖慢LLM
     except Exception as e:
         error_str = str(e)
         logger.error(f"search_documents 异常: {error_str}", exc_info=True)
@@ -334,10 +335,9 @@ def search_documents_tool(query: str) -> str:
 
     # 按综合分数排序
     results.sort(key=lambda x: x.get("final_score", 0), reverse=True)
-    results = results[:5]  # 取 top 5（从3提升到5，减少LLM因信息不足而重复搜索）
+    results = results[:3]  # 取 top 3（保持精简，过多结果增加上下文token拖慢LLM）
 
-    search_hint = f"（本轮第{current_count}/{_MAX_SEARCH_PER_TURN}次搜索）" if current_count > 1 else ""
-    output = f"【检索结果】共找到 {len(results)} 条相关内容{search_hint}：\n\n"
+    output = f"【检索结果】共找到 {len(results)} 条相关内容：\n\n"
     for i, r in enumerate(results, 1):
         source = r.get('source', '未知来源')
         relevance = r.get('relevance_score', 0)
