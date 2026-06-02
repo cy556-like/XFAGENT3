@@ -304,25 +304,12 @@ def _build_agent_prompt(agent_task: str, web_search: bool = False) -> str:
 
 """
     
-    tools_section_marker = "## 工具选择指南"
+    tools_section_marker = "## 核心能力与工具选择"
     tools_idx = base_prompt.find(tools_section_marker)
     
     if tools_idx > 0:
         preserved_section = base_prompt[tools_idx:]
         result = custom_header + preserved_section
-        
-        old_general_rule = """### 通用问题处理规则
-- 用户提出编程、知识问答、写作、翻译等通用问题时，**直接用自己的知识回答**，不要拒绝
-- 不要说"这不是我的服务范围"、"我只处理企业事务"之类的话
-- 回答通用问题时，依然保持专业、清晰的风格"""
-        
-        new_general_rule = """### 通用问题处理规则
-- **与你的专业领域相关的问题**（如质量体系、公司制度、流程规范等）：必须先检索知识库，详见上方「知识库优先规则」
-- **纯通用问题**（编程、数学计算、翻译、闲聊等与专业领域无关的问题）：可以直接用自己的知识回答
-- 不要说"这不是我的服务范围"、"我只处理企业事务"之类的话
-- 回答通用问题时，依然保持专业、清晰的风格"""
-        
-        result = result.replace(old_general_rule, new_general_rule)
         return result
     else:
         return custom_header + base_prompt

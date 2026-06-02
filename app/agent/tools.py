@@ -273,7 +273,7 @@ def _load_employees():
 @tool
 @cached_tool(ttl=300)  # [#8] 文档搜索缓存 5 分钟（与web_search一致，减少同会话重复搜索）
 def search_documents_tool(query: str) -> str:
-    """搜索公司文档知识库，查询制度、流程、规范等。
+    """搜索公司文档知识库，查询制度、流程、规范等。不适用于查员工信息或文档列表。
 
     Args:
         query: 搜索关键词，如「年假制度」「报销流程」
@@ -348,11 +348,11 @@ def search_documents_tool(query: str) -> str:
 
 @tool
 def lookup_employee_tool(name: str = "", department: str = "") -> str:
-    """查询员工信息。不传参列出全部，传参按条件筛选。
+    """查询员工信息（姓名/部门/职位/联系方式）。不传参列出全部，传参按条件筛选。
 
     Args:
-        name: 员工姓名（可选，模糊匹配）
-        department: 部门名称（可选，模糊匹配）
+        name: 员工姓名（可选，模糊匹配），如「张」可匹配「张三」
+        department: 部门名称（可选，模糊匹配），如「技术」可匹配「技术部」
     """
     employees = _load_employees()
 
@@ -477,7 +477,7 @@ def upload_document_tool(file_path: str) -> str:
 
 @tool
 def get_document_content_tool(filename: str) -> str:
-    """获取文档完整内容。修改文档前必须先调此工具读取原文。
+    """获取文档完整内容（不消耗embedding额度）。修改文档前必须先调此工具读取原文。
 
     Args:
         filename: 文档文件名（含扩展名），如「员工手册.pdf」
@@ -522,11 +522,12 @@ def delete_document_tool(filename: str) -> str:
 @tool
 def modify_document_tool(filename: str, content: str, append: bool = False) -> str:
     """修改知识库文档内容（自动重索引）。不生成下载文件，要导出用export工具。
+    替换模式务必先调用 get_document_content_tool 读取完整原文，再在此基础上修改。
 
     Args:
-        filename: 文件名（含扩展名）
+        filename: 文件名（含扩展名），需与知识库中完全一致
         content: 新内容（追加模式=追加内容，替换模式=完整新内容）
-        append: True=追加，False=替换（默认）。替换前务必先读取完整原文！
+        append: True=追加，False=替换（默认）
     """
     current_aid_mod = get_current_agent_id()
     if not current_aid_mod:
@@ -601,11 +602,12 @@ def modify_document_tool(filename: str, content: str, append: bool = False) -> s
 @tool
 def export_document_tool(content: str, filename: str = "", title: str = "") -> str:
     """生成docx文档并提供下载链接。不影响知识库，仅用于导出文件。
+    content中表格必须用 Markdown 表格语法（| 列1 | 列2 | 格式），不要用空格对齐。
 
     Args:
-        content: 文档内容（Markdown格式，不要包含emoji）。表格用 | 列1 | 列2 | 格式。
-        filename: 输出文件名（含扩展名），为空则自动生成。
-        title: 文档标题，为空则使用文件名。
+        content: 文档内容（Markdown格式，不要包含emoji）
+        filename: 输出文件名（含扩展名），为空则自动生成
+        title: 文档标题，为空则使用文件名
     """
     try:
         if not filename:
@@ -626,12 +628,14 @@ def export_document_tool(content: str, filename: str = "", title: str = "") -> s
 
 @tool
 def export_xlsx_tool(content: str, filename: str = "", title: str = "") -> str:
-    """生成xlsx（Excel）文档并提供下载链接。适合表格数据和报表。
+    """生成xlsx（Excel）文档并提供下载链接。
+    分析类表格（DFMEA/PFMEA/控制计划等）放在同一工作表，不要拆分多Sheet。
+    项目信息放表格上方（如：项目名称：XXX），评级标准/AP矩阵等参考内容省略。
 
     Args:
-        content: 表格内容（Markdown格式）。分析类表格放在同一工作表，不要拆分多Sheet。
-        filename: 输出文件名（含扩展名），为空则自动生成。
-        title: 工作表名称，为空则使用文件名。
+        content: 表格内容（Markdown格式）
+        filename: 输出文件名（含扩展名），为空则自动生成
+        title: 工作表名称，为空则使用文件名
     """
     try:
         if not filename:
@@ -654,10 +658,10 @@ def export_xlsx_tool(content: str, filename: str = "", title: str = "") -> str:
 
 @tool
 def github_api_tool(action: str, repo: str = "", path: str = "", content: str = "", message: str = "", token: str = "") -> str:
-    """与 GitHub 仓库交互，支持读取和更新文件。
+    """与 GitHub 仓库交互，支持读取和更新文件。修改文件前先用 read_full 读取完整内容。
 
     Args:
-        action: "read"(截断) | "read_full"(完整) | "list"(目录) | "update"(更新)
+        action: "read"(截断8000字) | "read_full"(完整) | "list"(目录) | "update"(更新)
         repo: 仓库名称，格式 "owner/repo"
         path: 文件路径
         content: 更新文件内容（仅 action=update）
