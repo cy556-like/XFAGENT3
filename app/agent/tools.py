@@ -273,7 +273,8 @@ def _load_employees():
 @tool
 @cached_tool(ttl=300)  # [#8] 文档搜索缓存 5 分钟（与web_search一致，减少同会话重复搜索）
 def search_documents_tool(query: str) -> str:
-    """搜索公司文档知识库，查询制度、流程、规范等。不适用于查员工信息或文档列表。
+    """搜索公司文档知识库，查询制度、流程、规范等。同一主题只搜1次，结果足够就回答。
+    不适用于：查员工→lookup_employee_tool，列文档→list_documents_tool，导出文件→export工具
 
     Args:
         query: 搜索关键词，如「年假制度」「报销流程」
@@ -521,8 +522,9 @@ def delete_document_tool(filename: str) -> str:
 
 @tool
 def modify_document_tool(filename: str, content: str, append: bool = False) -> str:
-    """修改知识库文档内容（自动重索引）。不生成下载文件，要导出用export工具。
+    """修改知识库文档内容（自动重索引）。不生成下载文件，要导出用export_document_tool或export_xlsx_tool。
     替换模式务必先调用 get_document_content_tool 读取完整原文，再在此基础上修改。
+    不适用于：导出文件→export_document_tool/export_xlsx_tool
 
     Args:
         filename: 文件名（含扩展名），需与知识库中完全一致
@@ -601,8 +603,9 @@ def modify_document_tool(filename: str, content: str, append: bool = False) -> s
 
 @tool
 def export_document_tool(content: str, filename: str = "", title: str = "") -> str:
-    """生成docx文档并提供下载链接。不影响知识库，仅用于导出文件。
+    """生成docx文档并提供下载链接。不影响知识库，仅用于导出文件。调用后任务完成，不要再调其他工具。
     content中表格必须用 Markdown 表格语法（| 列1 | 列2 | 格式），不要用空格对齐。
+    不适用于：改知识库→modify_document_tool
 
     Args:
         content: 文档内容（Markdown格式，不要包含emoji）
