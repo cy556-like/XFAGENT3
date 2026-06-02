@@ -479,7 +479,7 @@
                 </div>
             </div>
         </div>
-        <input type="file" id="fileInput" accept=".pdf,.txt,.docx" onchange="onFileSelected(event)">
+        <input type="file" id="fileInput" accept=".pdf,.txt,.docx,.xlsx" onchange="onFileSelected(event)">
     </div>
 </div>
 
@@ -490,9 +490,9 @@
         <div class="upload-section" id="uploadZone" onclick="document.getElementById('kbFileInput').click()">
             <div class="upload-icon">📤</div>
             <div class="upload-text">点击或拖拽文件到此处 <strong>上传到知识库</strong></div>
-            <div class="upload-hint">支持 PDF、TXT、DOCX 格式</div>
+            <div class="upload-hint">支持 PDF、TXT、DOCX、XLSX 格式</div>
         </div>
-        <input type="file" id="kbFileInput" accept=".pdf,.txt,.docx" onchange="onKbFileSelected(event)" multiple>
+        <input type="file" id="kbFileInput" accept=".pdf,.txt,.docx,.xlsx" onchange="onKbFileSelected(event)" multiple>
         <div class="upload-progress" id="uploadProgress">
             <div class="progress-file" id="progressFileName">正在上传...</div>
             <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressBarFill"></div></div>
@@ -858,6 +858,7 @@ async function loadDocList() {
                 let icon = '📄';
                 if (doc.endsWith('.pdf')) icon = '📕';
                 else if (doc.endsWith('.docx')) icon = '📘';
+                else if (doc.endsWith('.xlsx')) icon = '📊';
                 else if (doc.endsWith('.txt')) icon = '📝';
                 item.innerHTML = `<span class="doc-icon">${icon}</span><span class="doc-name">${doc}</span>`;
                 list.appendChild(item);

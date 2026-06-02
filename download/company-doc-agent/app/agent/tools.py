@@ -245,6 +245,114 @@ def modify_document_tool(file_path: str, instruction: str) -> str:
         return f"文档修改失败: {error_msg}"
 
 
+@tool
+def create_document_tool(filename: str, content_description: str, file_format: str = "xlsx") -> str:
+    """从零创建新文档（支持 XLSX/DOCX）。当用户要求"生成表格文件"、"导出XLSX"、"创建文档"且不需要基于已有文件时使用。
+
+    Args:
+        filename: 文件名（不含扩展名，如"DFMEA表"）
+        content_description: 文档内容描述（包含完整的表格/文档内容，Markdown表格格式）
+        file_format: 文件格式，"xlsx" 或 "docx"，默认 "xlsx"
+    """
+    try:
+        from langchain_openai import ChatOpenAI
+        from langchain_core.messages import SystemMessage, HumanMessage
+
+        static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+        modified_dir = os.path.join(static_dir, "modified")
+        os.makedirs(modified_dir, exist_ok=True)
+
+        # 安全文件名：去除特殊字符
+        safe_name = "".join(c for c in filename if c.isalnum() or c in "._-一二三四五六七八九十百千万亿") or "output"
+
+        if file_format == "xlsx":
+            # XLSX: 调用 LLM 生成 Markdown 表格，再解析写入 XLSX
+            llm = ChatOpenAI(
+                api_key=settings.LLM_API_KEY,
+                base_url=settings.LLM_BASE_URL,
+                model=settings.LLM_MODEL,
+                temperature=0.3,
+                timeout=settings.LLM_TIMEOUT,
+                max_retries=1,
+            )
+
+            system_prompt = """你是表格生成助手。根据用户要求生成完整的表格数据。
+
+输出格式规则（必须严格遵守！）：
+- 使用 Markdown 表格格式：| 列1 | 列2 | 列3 |
+- 第一行必须是表头，第二行是 |------|------|------| 分隔线
+- 每个 Sheet 用 === Sheet: 工作表名 === 标记开头
+- 只输出表格数据，不要添加任何解释说明
+- 用中文输出
+- 内容要完整详细，不要省略行"""
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=f"请生成以下表格：\n\n{content_description}"),
+            ]
+
+            response = llm.invoke(messages)
+            table_content = response.content
+
+            output_filename = f"{safe_name}.xlsx"
+            output_path = os.path.join(modified_dir, output_filename)
+
+            from app.utils.xlsx_handler import write_xlsx_from_text
+            actual_path = write_xlsx_from_text(table_content, output_path)
+            output_filename = os.path.basename(actual_path)
+
+            return f"XLSX文件已生成！下载链接: /static/modified/{output_filename}"
+
+        elif file_format == "docx":
+            # DOCX: 调用 LLM 生成内容，写入 Word 文档
+            llm = ChatOpenAI(
+                api_key=settings.LLM_API_KEY,
+                base_url=settings.LLM_BASE_URL,
+                model=settings.LLM_MODEL,
+                temperature=0.3,
+                timeout=settings.LLM_TIMEOUT,
+                max_retries=1,
+            )
+
+            system_prompt = """你是文档生成助手。根据用户要求生成完整的文档内容。
+只输出文档正文，不要添加解释说明。用中文输出。"""
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=f"请生成以下文档：\n\n{content_description}"),
+            ]
+
+            response = llm.invoke(messages)
+            doc_content = response.content
+
+            output_filename = f"{safe_name}.docx"
+            output_path = os.path.join(modified_dir, output_filename)
+
+            try:
+                from docx import Document
+                doc = Document()
+                paragraphs = doc_content.split("\n")
+                for p_text in paragraphs:
+                    doc.add_paragraph(p_text)
+                doc.save(output_path)
+            except ImportError:
+                output_filename = f"{safe_name}.txt"
+                output_path = os.path.join(modified_dir, output_filename)
+                with open(output_path, "w", encoding="utf-8") as f:
+                    f.write(doc_content)
+
+            return f"DOCX文件已生成！下载链接: /static/modified/{output_filename}"
+
+        else:
+            return f"不支持的文件格式: {file_format}，仅支持 xlsx 或 docx"
+
+    except Exception as e:
+        error_msg = str(e)
+        if "ReadTimeout" in error_msg or "timed out" in error_msg:
+            return "文档生成超时，请稍后重试或简化内容。"
+        return f"文档生成失败: {error_msg}"
+
+
 # ===== 导出所有工具列表 =====
 ALL_TOOLS = [
     search_documents_tool,
@@ -252,4 +360,5 @@ ALL_TOOLS = [
     list_documents_tool,
     upload_document_tool,
     modify_document_tool,
+    create_document_tool,
 ]
