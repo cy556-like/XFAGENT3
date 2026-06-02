@@ -27,7 +27,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from app.config import settings, VISION_MODELS, DEFAULT_VISION_MODEL, FAST_MODELS
-from app.agent.tools import ALL_TOOLS, get_tools, set_current_agent_id, set_current_session_id
+from app.agent.tools import ALL_TOOLS, get_tools, set_current_agent_id, set_current_session_id, reset_search_count
 from app.agent.prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_WITH_WEB_SEARCH, CHAT_SYSTEM_PROMPT
 from app.memory.manager import get_session_history
 
@@ -36,8 +36,10 @@ logger = logging.getLogger(__name__)
 # 最大历史消息数量（加速推理，避免上下文过长）
 MAX_HISTORY_MESSAGES = 10
 
-# [#6] 多步骤任务编排：增大最大工具调用轮数，支持复杂任务
-MAX_TOOL_ROUNDS = 8
+# [#6] 多步骤任务编排：最大工具调用轮数
+# 从8降到5：大多数场景2-3次搜索+1次导出即完成，8轮导致LLM过度搜索
+# 5轮仍足够处理复杂任务（3次搜索 + 2次其他操作）
+MAX_TOOL_ROUNDS = 5
 
 # [#11] 工具重试配置
 MAX_TOOL_RETRIES = 2
@@ -278,6 +280,14 @@ def _build_agent_prompt(agent_task: str, web_search: bool = False) -> str:
 3. 如果知识库检索无结果，可以补充自身知识，但**必须明确标注**：「以下内容非来自知识库，仅供参考」
 4. **绝对禁止**在未检索知识库的情况下，直接用自己的知识回答专业问题
 
+### 搜索效率规则（强制！避免思考过久）
+1. **同一主题只搜1次**：用组合关键词一次搜完，不要拆成多次搜索
+   - ✅ 正确：search_documents_tool(query="DFMEA表格结构 评级标准 措施优先级 AP值")
+   - ❌ 错误：先搜"DFMEA"，再搜"评级标准"，再搜"AP值"（3次搜索同一主题）
+2. **每轮对话最多搜索3次知识库**，超过后系统会拦截
+3. **信息足够就回答**：搜索已返回相关结果时，直接基于结果回答，不要为了"更全面"再搜
+4. **生成文档/表格时**：1次搜索获取模板/标准，然后直接生成，不要反复搜索确认细节
+
 ### 判断标准
 - 必须检索知识库的问题：与你的角色定义、专业领域、公司制度/流程/规范/标准相关的问题
   - 示例：「FMEA成员有哪些」「质量方针是什么」「VDA6.4有什么要求」「乌龟图怎么画」
@@ -425,6 +435,7 @@ def chat(user_input: str, session_id: str = "default", web_search: bool = False,
     """非流式对话（保留兼容）"""
     set_current_agent_id(agent_id)
     set_current_session_id(session_id)
+    reset_search_count()  # 每轮新对话重置搜索计数
     
     if agent_task:
         custom_prompt = _inject_current_date(_build_agent_prompt(agent_task, web_search=web_search))
@@ -502,6 +513,7 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
     """
     set_current_agent_id(agent_id)
     set_current_session_id(session_id)
+    reset_search_count()  # 每轮新对话重置搜索计数
     
     # 性能优化：意图路由 - 简单问题走Chat模式（跳过Agent循环，减少3-5秒延迟）
     if mode == "agent" and _is_simple_query(user_input) and not web_search:
