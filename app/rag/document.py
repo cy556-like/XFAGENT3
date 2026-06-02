@@ -1008,13 +1008,100 @@ def _wide_table_to_kv_flat(header_row: list, data_rows: list, num_cols: int,
     return '\n'.join(parts)
 
 
+def load_xlsx_document(file_path: str) -> list:
+    """加载 XLSX/XLS 文件，将每个工作表的内容转为文本格式供 LLM 分析
+    
+    策略：
+    - 每个工作表单独输出
+    - 表格内容转为 Markdown 表格语法
+    - 支持合并单元格（展开为多行多列）
+    
+    Returns:
+        list[Document]: LangChain Document 列表
+    """
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        logger.warning("openpyxl 未安装，无法读取 xlsx 文件")
+        return []
+    
+    try:
+        wb = load_workbook(file_path, read_only=True, data_only=True)
+        content_parts = []
+        
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            content_parts.append(f'# 工作表：{sheet_name}')
+            
+            rows_data = []
+            for row in ws.iter_rows(values_only=True):
+                cells = []
+                for cell in row:
+                    if cell is None:
+                        cells.append('')
+                    else:
+                        cells.append(str(cell).strip())
+                # Skip completely empty rows
+                if any(c for c in cells):
+                    rows_data.append(cells)
+            
+            if not rows_data:
+                content_parts.append('（空工作表）')
+                continue
+            
+            # Determine column count
+            num_cols = max(len(row) for row in rows_data)
+            # Pad short rows
+            for row in rows_data:
+                while len(row) < num_cols:
+                    row.append('')
+            
+            # Convert to Markdown table
+            if num_cols <= 8:
+                # Narrow table: standard Markdown table
+                # Header row
+                header = rows_data[0]
+                content_parts.append('| ' + ' | '.join(header) + ' |')
+                content_parts.append('| ' + ' | '.join(['---'] * num_cols) + ' |')
+                # Data rows
+                for row in rows_data[1:]:
+                    content_parts.append('| ' + ' | '.join(row[:num_cols]) + ' |')
+            else:
+                # Wide table: key-value format
+                header = rows_data[0]
+                for row_idx, row in enumerate(rows_data[1:], 1):
+                    title_val = row[0].strip() if row[0].strip() else f'行{row_idx}'
+                    content_parts.append(f'【条目{row_idx}】{title_val}')
+                    for ci in range(num_cols):
+                        col_name = header[ci].strip() if ci < len(header) and header[ci].strip() else f'列{ci+1}'
+                        val = row[ci].strip() if ci < len(row) else ''
+                        if val:
+                            content_parts.append(f'- {col_name}：{val}')
+                    content_parts.append('')
+            
+            content_parts.append('')
+        
+        wb.close()
+        full_content = '\n'.join(content_parts)
+        
+        if not full_content.strip():
+            return []
+        
+        from langchain_core.documents import Document
+        return [Document(page_content=full_content, metadata={"source": file_path})]
+    except Exception as e:
+        logger.error(f"加载 XLSX 文件失败: {e}")
+        return []
+
+
 def load_document(file_path: str) -> list:
     """
     根据文件类型加载文档
-    支持：PDF、TXT、MD、DOCX
+    支持：PDF、TXT、MD、DOCX、XLSX、XLS
 
     DOCX 文件使用 python-docx 加载，保留表格结构为 Markdown 格式，
     解决 Docx2txtLoader 展平表格导致结构丢失的问题。
+    XLSX/XLS 文件使用 openpyxl 加载，将工作表转为 Markdown 表格格式。
     """
     ext = os.path.splitext(file_path)[1].lower()
 
@@ -1029,8 +1116,10 @@ def load_document(file_path: str) -> list:
         return loader.load()
     elif ext == ".docx":
         return _load_docx_with_tables(file_path)
+    elif ext in (".xlsx", ".xls"):
+        return load_xlsx_document(file_path)
     else:
-        raise ValueError(f"不支持的文件格式: {ext}，仅支持 PDF/TXT/MD/DOCX")
+        raise ValueError(f"不支持的文件格式: {ext}，仅支持 PDF/TXT/MD/DOCX/XLSX/XLS")
 
 
 def _split_markdown_by_headers(docs: list, chunk_size: int = 800, chunk_overlap: int = 200) -> list:
@@ -2629,6 +2718,184 @@ def export_document_as_docx(content: str, filename: str, title: str = "", sessio
             "file_path": file_path,
             "message": f"文档已导出为 {txt_filename}（docx 生成失败: {str(e)}，回退为 txt 格式）",
         }
+
+
+def export_document_as_xlsx(content: str, filename: str, title: str = "", session_id: str = "") -> dict:
+    """将文本内容导出为 .xlsx 文件，保存到专用导出目录，供用户下载
+    
+    支持 Markdown 表格语法自动转为 Excel 原生表格。
+    
+    Args:
+        content: 文档内容（Markdown格式，支持表格）
+        filename: 输出文件名（含扩展名）
+        title: 文档标题（可选，将作为第一个工作表的名称）
+        session_id: 会话ID（用于按会话隔离导出文件目录）
+    
+    Returns:
+        dict: 包含导出状态和文件路径
+    """
+    export_dir = _get_export_dir(session_id=session_id)
+    
+    filename = unquote(filename)
+    safe_filename = filename.replace('/', '_').replace('\\', '_')
+    filename = safe_filename
+    
+    if not filename.endswith('.xlsx'):
+        filename = filename.rsplit('.', 1)[0] + '.xlsx'
+    
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    except ImportError:
+        # 回退：保存为 CSV
+        csv_filename = filename.rsplit('.', 1)[0] + '.csv'
+        file_path = os.path.join(export_dir, csv_filename)
+        with open(file_path, "w", encoding="utf-8-sig") as f:
+            if title:
+                f.write(f"{title}\n\n")
+            f.write(content)
+        return {
+            "status": "success",
+            "filename": csv_filename,
+            "file_path": file_path,
+            "message": f"文档已导出为 {csv_filename}（openpyxl 未安装，回退为 CSV 格式）",
+        }
+    
+    try:
+        file_path = os.path.join(export_dir, filename)
+        wb = Workbook()
+        
+        # Styles
+        header_font = Font(bold=True, size=11, name='宋体')
+        header_fill = PatternFill(start_color='D9E2F3', end_color='D9E2F3', fill_type='solid')
+        header_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell_font = Font(size=10, name='宋体')
+        cell_alignment = Alignment(vertical='center', wrap_text=True)
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        # Parse content and extract tables
+        lines = content.split('\n')
+        sheet_index = 0
+        current_sheet_name = title or filename.rsplit('.', 1)[0]
+        current_rows = []  # list of list of strings
+        non_table_lines = []  # non-table content
+        has_table = False
+        
+        for line in lines:
+            stripped = line.strip()
+            
+            # Detect Markdown table row
+            if stripped.startswith('|') and '|' in stripped[1:]:
+                cells = [c.strip() for c in stripped.strip('|').split('|')]
+                # Skip separator row |---|---|
+                if all(re.match(r'^:?-+:?$', c.strip()) for c in cells if c.strip()):
+                    continue
+                current_rows.append(cells)
+                has_table = True
+            else:
+                # If we were collecting table rows and now hit non-table line,
+                # flush the current table to a sheet
+                if current_rows:
+                    sheet_index = _write_rows_to_xlsx_sheet(
+                        wb, current_rows, sheet_index, current_sheet_name,
+                        header_font, header_fill, header_alignment, 
+                        cell_font, cell_alignment, thin_border
+                    )
+                    current_rows = []
+                    current_sheet_name = f'表格{sheet_index + 1}'
+                
+                # Collect non-table content
+                if stripped:
+                    # Check for heading patterns that could be sheet names
+                    heading_match = re.match(r'^#{1,3}\s+(.+)', stripped)
+                    if heading_match and not has_table:
+                        current_sheet_name = heading_match.group(1).strip()[:31]  # Excel sheet name max 31 chars
+                    non_table_lines.append(stripped)
+        
+        # Flush remaining table rows
+        if current_rows:
+            sheet_index = _write_rows_to_xlsx_sheet(
+                wb, current_rows, sheet_index, current_sheet_name,
+                header_font, header_fill, header_alignment,
+                cell_font, cell_alignment, thin_border
+            )
+        
+        # If there's non-table content but no tables, write text to first sheet
+        if non_table_lines and not has_table:
+            ws = wb.active
+            ws.title = current_sheet_name[:31] if current_sheet_name else 'Sheet1'
+            for row_idx, text in enumerate(non_table_lines, 1):
+                clean_text = re.sub(r'\*+', '', text)  # Remove markdown bold markers
+                clean_text = re.sub(r'^#{1,6}\s+', '', clean_text)  # Remove heading markers
+                ws.cell(row=row_idx, column=1, value=clean_text)
+        
+        # Remove default empty sheet if we created others
+        if sheet_index > 0 and 'Sheet' in wb.sheetnames:
+            del wb['Sheet']
+        
+        wb.save(file_path)
+        
+        return {
+            "status": "success",
+            "filename": filename,
+            "file_path": file_path,
+            "message": f"文档已导出为 {filename}",
+        }
+    except Exception as e:
+        logger.error(f"导出 XLSX 失败: {e}", exc_info=True)
+        return {"status": "error", "message": f"导出 XLSX 失败: {str(e)}"}
+
+
+def _write_rows_to_xlsx_sheet(wb, rows_data, sheet_index, sheet_name, 
+                                header_font, header_fill, header_alignment,
+                                cell_font, cell_alignment, thin_border):
+    """Write parsed table rows to an XLSX worksheet
+    
+    Returns:
+        int: next sheet index
+    """
+    if sheet_index == 0:
+        ws = wb.active
+        ws.title = (sheet_name or '表格1')[:31]
+    else:
+        ws = wb.create_sheet(title=(sheet_name or f'表格{sheet_index+1}')[:31])
+    
+    num_cols = max(len(row) for row in rows_data)
+    
+    for row_idx, row in enumerate(rows_data, 1):
+        for col_idx, cell_text in enumerate(row[:num_cols], 1):
+            # Clean markdown formatting
+            clean_text = re.sub(r'\*+', '', cell_text)
+            cell = ws.cell(row=row_idx, column=col_idx, value=clean_text)
+            cell.border = thin_border
+            
+            if row_idx == 1:
+                # Header row
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_alignment
+            else:
+                cell.font = cell_font
+                cell.alignment = cell_alignment
+    
+    # Auto-adjust column widths
+    for col_idx in range(1, num_cols + 1):
+        max_length = 0
+        for row in rows_data:
+            if col_idx - 1 < len(row):
+                cell_len = len(str(row[col_idx - 1]))
+                if cell_len > max_length:
+                    max_length = cell_len
+        # Cap at 50, min at 8
+        adjusted_width = min(max(max_length + 2, 8), 50)
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = adjusted_width
+    
+    return sheet_index + 1
 
 
 def _add_landscape_section(doc, title_text: str = ""):

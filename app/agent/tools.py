@@ -20,7 +20,7 @@ from functools import wraps
 from langchain_core.tools import tool
 
 from app.config import settings
-from app.rag.document import search_documents, index_document, list_indexed_documents, delete_document, update_document, export_document_as_docx, get_document_content
+from app.rag.document import search_documents, index_document, list_indexed_documents, delete_document, update_document, export_document_as_docx, export_document_as_xlsx, get_document_content
 
 logger = logging.getLogger(__name__)
 
@@ -491,7 +491,7 @@ def upload_document_tool(file_path: str) -> str:
         return "【上传失败】当前是普通聊天模式，没有关联的知识库。如需上传文档，请先选择一个智能体。"
 
     ext = file_path.rsplit('.', 1)[-1].lower() if '.' in file_path else ''
-    supported = ['pdf', 'txt', 'docx', 'md']
+    supported = ['pdf', 'txt', 'docx', 'md', 'xlsx', 'xls']
     if ext not in supported:
         return f"【上传失败】不支持的文件格式：.{ext}。目前支持：{', '.join(['.'+e for e in supported])}"
 
@@ -684,6 +684,47 @@ def export_document_tool(content: str, filename: str = "", title: str = "") -> s
             actual_filename = result.get('filename', filename)
             download_url = f"/api/v1/documents/export-download/{actual_filename}"
             return f"【导出成功】文档已生成：{actual_filename}\n\n下载链接：{download_url}\n\n【重要】请直接将上面的「下载链接」原样展示给用户，不要修改、不要省略URL，不要添加额外说明。"
+        else:
+            return f"【导出失败】{result.get('message', '未知错误')}"
+    except Exception as e:
+        return f"【导出失败】{str(e)}"
+
+
+@tool
+def export_xlsx_tool(content: str, filename: str = "", title: str = "") -> str:
+    """将文本内容生成为xlsx（Excel）文档并提供下载链接。用于生成表格数据、汇总报表等Excel文件。
+
+    【用途】当用户要求生成一个可下载的Excel文件时使用。
+    【典型问题】
+    - 「帮我生成一个Excel表格」「导出为xlsx」
+    - 「把数据整理成Excel文件」「给我一个表格文件」
+    - 「生成一份报表」「导出数据到Excel」
+    - 「我要xlsx格式的」「不要docx，要xlsx」
+    【与export_document_tool的区别】
+    - export_document_tool：生成docx（Word）文档，适合文字报告
+    - export_xlsx_tool：生成xlsx（Excel）文档，适合表格数据和报表
+    【XLSX内容要求】
+    - content中使用Markdown表格语法：| 列1 | 列2 | 列3 |
+    - 每个Markdown表格会自动转为Excel的一个工作表
+    - 表格外的文字也会保留在对应工作表中
+    - 不要包含emoji表情符号
+
+    Args:
+        content: 文档内容（Markdown格式，使用表格语法组织数据，不要包含emoji）。
+        filename: 输出文件名（含扩展名），为空则自动生成。示例：「FMEA团队汇总.xlsx」
+        title: 文档标题/工作表名称，为空则使用文件名。示例：「FMEA团队信息」
+    """
+    try:
+        if not filename:
+            filename = f"export_{int(time.time())}.xlsx"
+        if not filename.endswith('.xlsx'):
+            filename = filename.rsplit('.', 1)[0] + '.xlsx'
+
+        result = export_document_as_xlsx(content, filename, title=title, session_id=get_current_session_id())
+        if result["status"] == "success":
+            actual_filename = result.get('filename', filename)
+            download_url = f"/api/v1/documents/export-download/{actual_filename}"
+            return f"【导出成功】Excel文档已生成：{actual_filename}\n\n下载链接：{download_url}\n\n【重要】请直接将上面的「下载链接」原样展示给用户，不要修改、不要省略URL，不要添加额外说明。"
         else:
             return f"【导出失败】{result.get('message', '未知错误')}"
     except Exception as e:
@@ -962,6 +1003,7 @@ BASE_TOOLS = [
     delete_document_tool,
     modify_document_tool,
     export_document_tool,
+    export_xlsx_tool,
 ]
 
 # 联网搜索工具（按需启用）

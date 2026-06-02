@@ -36,6 +36,7 @@ SYSTEM_PROMPT = """# 角色
 | 文档删除 | 从知识库中移除指定文档 | delete_document_tool |
 | 文档修改 | 修改知识库中已有文档的内容（支持追加或替换） | modify_document_tool |
 | 文档导出 | 仅当用户明确要求下载docx文件时使用（关键词：下载/导出/Word文件） | export_document_tool |
+| Excel导出 | 当用户要求下载xlsx/Excel文件时使用（关键词：Excel文件/xlsx/表格文件） | export_xlsx_tool |
 | GitHub操作 | 读取/列出/更新 GitHub 仓库文件 | github_api_tool |
 | 发送邮件 | 发送电子邮件通知 | send_email_tool |
 | 数据库查询 | 执行 SQL 只读查询，获取业务数据 | database_query_tool |
@@ -49,6 +50,7 @@ SYSTEM_PROMPT = """# 角色
 - 用户问**「有哪些文档」「文档列表」「知识库有什么」** → 用 **list_documents_tool**
 - 用户问**「修改文档」「添加内容到文档」「在文档里加上」「编辑知识库文件」** → 用 **modify_document_tool**
 - 用户问**「导出文档」「生成docx」「整合文档」「给我Word文件」「下载文档」** → 用 **export_document_tool**
+- 用户问**「生成Excel」「导出xlsx」「给我Excel文件」「表格文件」「我要xlsx格式」** → 用 **export_xlsx_tool**
 - 用户问**「GitHub」「代码」「仓库」「推送」** → 用 **github_api_tool**
 - 用户问**「发邮件」「通知」「邮件」** → 用 **send_email_tool**
 - 用户问**「销售额」「库存」「订单」「数据库」** → 用 **database_query_tool**
@@ -63,6 +65,7 @@ SYSTEM_PROMPT = """# 角色
 ├─ 上传/删除文档 → upload_document_tool / delete_document_tool
 ├─ 修改/编辑知识库文档内容（添加、修改、替换文档中的文字）→ modify_document_tool
 ├─ 导出/生成文档（返回docx文件、整合文档、简略版文档）→ export_document_tool
+├─ 导出/生成Excel（返回xlsx文件、表格数据、报表）→ export_xlsx_tool
 ├─ GitHub 仓库操作（查看/更新代码）→ github_api_tool
 ├─ 发邮件通知 → send_email_tool
 ├─ 数据库查询（订单/库存/销售等业务数据）→ database_query_tool
@@ -112,6 +115,12 @@ SYSTEM_PROMPT = """# 角色
 - ⚠️ 绝对不要用空格或符号对齐的假表格！必须使用 | 分隔的Markdown表格
   正确：| 部门 | 职责 | 负责人 |\n|---|---|---|\n| 质量部 | 质量管理 | 张三 |
   错误：部门    职责    负责人\n质量部  质量管理  张三
+
+### export_xlsx_tool 使用规则
+- 当用户明确要求 xlsx/Excel 格式时使用此工具，不要用 export_document_tool
+- 用户说「我要xlsx格式」「不要docx」「要Excel文件」时，必须使用 export_xlsx_tool
+- content参数中的表格必须使用Markdown表格语法：| 列1 | 列2 | 格式，会自动转为Excel原生表格
+- ⚠️ 工具返回的下载链接必须原样展示给用户
 
 ### GitHub 读取文件规则
 - 查看文件内容：github_api_tool(action="read", ...) — 大文件自动截断到8000字
@@ -210,6 +219,7 @@ SYSTEM_PROMPT_WITH_WEB_SEARCH = """# 角色
 | 文档删除 | 从知识库中移除指定文档 | delete_document_tool |
 | 文档修改 | 修改知识库中已有文档的内容（支持追加或替换） | modify_document_tool |
 | 文档导出 | 仅当用户明确要求下载docx文件时使用（关键词：下载/导出/Word文件） | export_document_tool |
+| Excel导出 | 当用户要求下载xlsx/Excel文件时使用（关键词：Excel文件/xlsx/表格文件） | export_xlsx_tool |
 | 联网搜索 | 搜索互联网获取最新资讯、实时数据等 | web_search_tool |
 | GitHub操作 | 读取/列出/更新 GitHub 仓库文件 | github_api_tool |
 | 发送邮件 | 发送电子邮件通知 | send_email_tool |
@@ -234,6 +244,7 @@ SYSTEM_PROMPT_WITH_WEB_SEARCH = """# 角色
 - 用户问**「最新」「今天」「实时」「新闻」** → 用 **web_search_tool**
 - 用户问**「修改文档」「添加内容到文档」「编辑知识库文件」** → 用 **modify_document_tool**
 - 用户问**「导出文档」「生成docx」「整合文档」「给我Word文件」** → 用 **export_document_tool**
+- 用户问**「生成Excel」「导出xlsx」「给我Excel文件」「表格文件」「我要xlsx格式」** → 用 **export_xlsx_tool**
 - 用户问**「GitHub」「代码」「仓库」** → 用 **github_api_tool**
 - 用户问**「发邮件」「通知」** → 用 **send_email_tool**
 - 用户问**「销售额」「库存」「订单」** → 用 **database_query_tool**
@@ -247,6 +258,8 @@ SYSTEM_PROMPT_WITH_WEB_SEARCH = """# 角色
 ├─ 知识库文档列表 → list_documents_tool
 ├─ 上传/删除文档 → upload_document_tool / delete_document_tool
 ├─ 修改/编辑知识库文档内容 → modify_document_tool
+├─ 导出/生成文档（返回docx文件）→ export_document_tool
+├─ 导出/生成Excel（返回xlsx文件、表格数据、报表）→ export_xlsx_tool
 ├─ 最新资讯、实时数据 → web_search_tool
 ├─ GitHub 仓库操作 → github_api_tool
 ├─ 发邮件通知 → send_email_tool
@@ -354,6 +367,7 @@ TOOL_DISPLAY_NAMES = {
     "delete_document_tool": "删除文档",
     "modify_document_tool": "修改文档",
     "export_document_tool": "导出文档",
+    "export_xlsx_tool": "导出Excel",
     "web_search_tool": "联网搜索",
     "github_api_tool": "GitHub操作",
     "send_email_tool": "发送邮件",

@@ -475,6 +475,7 @@ TOOL_DISPLAY_NAMES = {
     "delete_document_tool": "删除文档",
     "modify_document_tool": "修改文档",
     "export_document_tool": "导出文档",
+    "export_xlsx_tool": "导出Excel",
     "web_search_tool": "联网搜索",
     "github_api_tool": "GitHub操作",
     "send_email_tool": "发送邮件",

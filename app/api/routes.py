@@ -312,7 +312,7 @@ async def chat_with_file_stream(
 
     ext = os.path.splitext(file.filename)[1].lower()
     image_exts = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
-    doc_exts = {".pdf", ".txt", ".docx"}
+    doc_exts = {".pdf", ".txt", ".docx", ".xlsx", ".xls"}
     code_exts = {".py", ".js", ".html", ".css", ".json", ".md", ".csv", ".xlsx", ".xls", ".doc", ".ppt", ".pptx"}
 
     # 文件大小检查
@@ -453,7 +453,7 @@ async def upload_document(file: UploadFile = File(...), agent_id: str = Form(Non
         )
 
     # 检查文件格式
-    allowed_ext = {".pdf", ".txt", ".md", ".docx"}
+    allowed_ext = {".pdf", ".txt", ".md", ".docx", ".xlsx", ".xls"}
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in allowed_ext:
         raise HTTPException(
@@ -658,6 +658,7 @@ async def download_document(filename: str, agent_id: str = Query(None, descripti
     ext = os.path.splitext(filename)[1].lower()
     mime_map = {
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ".pdf": "application/pdf",
         ".txt": "text/plain; charset=utf-8",
     }
@@ -687,6 +688,41 @@ async def export_document_api(req: ExportDocumentRequest):
             filename += '.docx'
 
         result = export_document_as_docx(req.content, filename, title=req.title)
+        if result["status"] == "success":
+            actual_filename = result.get('filename', filename)
+            return {
+                "status": "success",
+                "filename": actual_filename,
+                "download_url": f"/api/v1/documents/export-download/{actual_filename}",
+                "message": result["message"],
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result.get("message", "导出失败"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"文档导出失败: {str(e)}")
+
+
+class ExportXlsxRequest(BaseModel):
+    """导出/生成XLSX文档请求"""
+    content: str  # 文档内容（Markdown格式，支持表格）
+    filename: str = ""  # 输出文件名（含扩展名），为空则自动生成
+    title: str = ""  # 文档标题/工作表名称，为空则使用filename
+
+
+@router.post("/documents/export-xlsx", summary="导出/生成文档为xlsx")
+async def export_xlsx_api(req: ExportXlsxRequest):
+    """
+    将文本内容生成为xlsx（Excel）文档并提供下载
+    支持Markdown表格自动转为Excel原生表格
+    """
+    try:
+        from app.rag.document import export_document_as_xlsx
+        
+        filename = req.filename or f"export_{int(time.time())}.xlsx"
+        if not filename.endswith('.xlsx'):
+            filename = filename.rsplit('.', 1)[0] + '.xlsx'
+
+        result = export_document_as_xlsx(req.content, filename, title=req.title)
         if result["status"] == "success":
             actual_filename = result.get('filename', filename)
             return {
@@ -801,6 +837,7 @@ async def download_export_document(filename: str):
     ext = os.path.splitext(safe_filename)[1].lower()
     mime_map = {
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ".pdf": "application/pdf",
         ".txt": "text/plain; charset=utf-8",
     }
