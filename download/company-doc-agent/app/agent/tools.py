@@ -166,6 +166,9 @@ def modify_document_tool(file_path: str, instruction: str) -> str:
         # 读取文档内容
         content = read_document_content(file_path)
 
+        # 获取文件扩展名（提前获取，用于后续判断）
+        ext = os.path.splitext(file_path)[1].lower()
+
         # 调用 LLM 修改文档（带超时保护）
         llm = ChatOpenAI(
             api_key=settings.LLM_API_KEY,
@@ -176,7 +179,18 @@ def modify_document_tool(file_path: str, instruction: str) -> str:
             max_retries=2,
         )
 
-        system_prompt = """你是文档修改助手。按修改要求修改文档，只返回修改后的完整内容，不添加解释。保持原格式和结构。用中文输出。"""
+        # 根据文件类型调整提示词
+        if ext == ".xlsx":
+            system_prompt = """你是表格修改助手。按修改要求修改表格数据，只返回修改后的完整内容，不添加解释。
+
+输出格式规则（重要！）：
+- 保持 Markdown 表格格式：| 列1 | 列2 | 列3 |
+- 第一行必须是表头，第二行是 |------|------|------| 分隔线
+- 每个 Sheet 用 === Sheet: 工作表名 === 标记
+- 不要添加额外的解释或注释
+- 用中文输出"""
+        else:
+            system_prompt = """你是文档修改助手。按修改要求修改文档，只返回修改后的完整内容，不添加解释。保持原格式和结构。用中文输出。"""
 
         messages = [
             SystemMessage(content=system_prompt),
@@ -187,14 +201,18 @@ def modify_document_tool(file_path: str, instruction: str) -> str:
         modified_content = response.content
 
         # 保存修改后的文件
-        ext = os.path.splitext(file_path)[1].lower()
         static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
         modified_dir = os.path.join(static_dir, "modified")
         os.makedirs(modified_dir, exist_ok=True)
         output_filename = f"modified_{os.path.basename(file_path)}"
         output_path = os.path.join(modified_dir, output_filename)
 
-        if ext == ".docx":
+        if ext == ".xlsx":
+            # XLSX 格式：解析 LLM 输出的表格文本，写入 XLSX 文件
+            from app.utils.xlsx_handler import write_xlsx_from_text
+            actual_path = write_xlsx_from_text(modified_content, output_path, source_file=file_path)
+            output_filename = os.path.basename(actual_path)
+        elif ext == ".docx":
             try:
                 from docx import Document
                 doc = Document(file_path)

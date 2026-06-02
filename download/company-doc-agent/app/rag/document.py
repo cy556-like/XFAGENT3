@@ -2,13 +2,18 @@
 文档处理与向量化模块 (RAG)
 负责：加载文档 → 分块 → 向量化 → 存入 ChromaDB → 检索
 优化：单例缓存 Embeddings 和 VectorStore 实例，避免重复创建
+支持：PDF、TXT、DOCX、XLSX
 """
 import os
+import logging
 from typing import Optional
 
+from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
+
+logger = logging.getLogger(__name__)
 
 try:
     from langchain_chroma import Chroma
@@ -51,20 +56,42 @@ def get_vector_store():
 def load_document(file_path: str) -> list:
     """
     根据文件类型加载文档
-    支持：PDF、TXT、DOCX
+    支持：PDF、TXT、DOCX、XLSX
     """
     ext = os.path.splitext(file_path)[1].lower()
 
     if ext == ".pdf":
         loader = PyPDFLoader(file_path)
+        return loader.load()
     elif ext == ".txt":
         loader = TextLoader(file_path, encoding="utf-8")
+        return loader.load()
     elif ext == ".docx":
         loader = Docx2txtLoader(file_path)
+        return loader.load()
+    elif ext == ".xlsx":
+        return _load_xlsx(file_path)
     else:
-        raise ValueError(f"不支持的文件格式: {ext}，仅支持 PDF/TXT/DOCX")
+        raise ValueError(f"不支持的文件格式: {ext}，仅支持 PDF/TXT/DOCX/XLSX")
 
-    return loader.load()
+
+def _load_xlsx(file_path: str) -> list:
+    """
+    加载 XLSX 文件为 LangChain Document 列表
+    每个 Sheet 作为一个 Document
+    """
+    try:
+        from app.utils.xlsx_handler import read_xlsx_to_text
+    except ImportError:
+        raise ImportError("XLSX 支持需要 openpyxl，请运行: pip install openpyxl")
+
+    filename = os.path.basename(file_path)
+    text = read_xlsx_to_text(file_path)
+
+    # 将整个 XLSX 内容作为一个 Document
+    # （如果文件很大，可以按 Sheet 拆分）
+    docs = [Document(page_content=text, metadata={"source": file_path, "source_file": filename})]
+    return docs
 
 
 def read_document_content(file_path: str) -> str:

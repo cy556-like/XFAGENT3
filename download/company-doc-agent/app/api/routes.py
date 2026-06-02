@@ -197,7 +197,7 @@ async def chat_with_file(
     - Agent 根据用户意图自动判断：提问则文字回答，修改则返回文件
     """
     # 检查文件格式
-    allowed_ext = {".pdf", ".txt", ".docx"}
+    allowed_ext = {".pdf", ".txt", ".docx", ".xlsx"}
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in allowed_ext:
         raise HTTPException(
@@ -267,10 +267,10 @@ async def chat_with_file(
 async def upload_document(file: UploadFile = File(...)):
     """
     上传文档并自动索引到向量数据库
-    支持 PDF、TXT、DOCX 格式
+    支持 PDF、TXT、DOCX、XLSX 格式
     """
     # 检查文件格式
-    allowed_ext = {".pdf", ".txt", ".docx"}
+    allowed_ext = {".pdf", ".txt", ".docx", ".xlsx"}
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in allowed_ext:
         raise HTTPException(
@@ -302,12 +302,12 @@ async def modify_document(
     """
     上传文档并根据修改要求进行修改，返回修改后的文件下载链接
 
-    - 支持 PDF、TXT、DOCX 格式
+    - 支持 PDF、TXT、DOCX、XLSX 格式
     - 修改要求：用自然语言描述如何修改
     - 返回修改后的文件下载链接
     """
     # 检查文件格式
-    allowed_ext = {".pdf", ".txt", ".docx"}
+    allowed_ext = {".pdf", ".txt", ".docx", ".xlsx"}
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in allowed_ext:
         raise HTTPException(
@@ -339,7 +339,11 @@ async def modify_document(
             max_retries=2,
         )
 
-        system_prompt = """你是文档修改助手。按修改要求修改文档，只返回修改后的完整内容，不添加解释。保持原格式和结构，表格数据保持表格格式。用中文输出。"""
+        # 根据文件类型调整提示词
+        if ext == ".xlsx":
+            system_prompt = """你是表格修改助手。按修改要求修改表格数据，只返回修改后的完整内容，不添加解释。\n\n输出格式规则（重要！）：\n- 保持 Markdown 表格格式：| 列1 | 列2 | 列3 |\n- 第一行必须是表头，第二行是 |------|------|------| 分隔线\n- 每个 Sheet 用 === Sheet: 工作表名 === 标记\n- 不要添加额外的解释或注释\n- 用中文输出"""
+        else:
+            system_prompt = """你是文档修改助手。按修改要求修改文档，只返回修改后的完整内容，不添加解释。保持原格式和结构，表格数据保持表格格式。用中文输出。"""
 
         messages = [
             SystemMessage(content=system_prompt),
@@ -357,7 +361,12 @@ async def modify_document(
         output_filename = f"modified_{file.filename}"
         output_path = os.path.join(modified_dir, output_filename)
 
-        if ext == ".docx":
+        if ext == ".xlsx":
+            # XLSX 格式：解析 LLM 输出的表格文本，写入 XLSX 文件
+            from app.utils.xlsx_handler import write_xlsx_from_text
+            actual_path = write_xlsx_from_text(modified_content, output_path, source_file=temp_path)
+            output_filename = os.path.basename(actual_path)
+        elif ext == ".docx":
             try:
                 from docx import Document
                 doc = Document(temp_path)
