@@ -93,7 +93,7 @@ def create_gradio_app():
                 gr.Markdown("### 文档管理")
                 file_input = gr.File(
                     label="上传文档",
-                    file_types=[".pdf", ".txt", ".docx"],
+                    file_types=[".pdf", ".txt", ".docx", ".xlsx", ".xls"],
                 )
                 upload_btn = gr.Button("上传到知识库", variant="secondary")
                 upload_result = gr.Textbox(label="上传结果", interactive=False)

@@ -1469,19 +1469,22 @@ function injectDownloadButtons(container) {
     const nodesToReplace = [];
     while (walker.nextNode()) {
         const node = walker.currentNode;
-        if (node.nodeValue && /\/api\/v1\/documents\/export-download\/[^ \n\)<"]+\.docx/.test(node.nodeValue)) {
+        if (node.nodeValue && /\/api\/v1\/documents\/export-download\/[^ \n\)<"]+\.(docx|xlsx|pdf|txt)/.test(node.nodeValue)) {
             nodesToReplace.push(node);
         }
     }
     nodesToReplace.forEach(node => {
         const text = node.nodeValue;
-        const urlMatch = text.match(/(\/api\/v1\/documents\/export-download\/[^ \n\)<"]+\.docx)/);
+        const urlMatch = text.match(/(\/api\/v1\/documents\/export-download\/[^ \n\)<"]+\.(docx|xlsx|pdf|txt))/);
         if (urlMatch) {
             const url = urlMatch[1];
             const btn = document.createElement('a');
-            btn.className = 'doc-download-btn';
+            // 根据文件扩展名显示不同的按钮文字和样式
+            const ext = url.split('.').pop().toLowerCase();
+            const btnLabels = { docx: '点击下载Word文档', xlsx: '点击下载Excel表格', pdf: '点击下载PDF文档', txt: '点击下载文本文件' };
+            btn.className = 'doc-download-btn' + (ext === 'xlsx' ? ' xlsx-btn' : '');
             btn.href = 'javascript:void(0)';
-            btn.textContent = '点击下载文档';
+            btn.textContent = btnLabels[ext] || '点击下载文档';
             btn.onclick = function() { downloadExportFile(url); };
             // 替换整个文本节点为按钮
             const parent = node.parentNode;
@@ -1511,7 +1514,10 @@ async function downloadExportFile(url) {
         }
         // 从Content-Disposition提取文件名
         const disposition = response.headers.get('Content-Disposition');
-        let filename = '导出文档.docx';
+        // 根据URL中的扩展名决定默认文件名
+        const urlExt = url.split('.').pop().toLowerCase();
+        const defaultNames = { docx: '导出文档.docx', xlsx: '导出表格.xlsx', pdf: '导出文档.pdf', txt: '导出文本.txt' };
+        let filename = defaultNames[urlExt] || '导出文档.docx';
         if (disposition) {
             const utf8Match = disposition.match(/filename\*=UTF-8''(.+)/i);
             if (utf8Match) {
@@ -1521,8 +1527,8 @@ async function downloadExportFile(url) {
                 if (plainMatch) filename = plainMatch[1];
             }
         }
-        // 从URL提取文件名（兜底）
-        if (filename === '导出文档.docx') {
+        // 从URL提取文件名（兜底：默认文件名未被服务端覆盖时才使用URL中的文件名）
+        if (filename === defaultNames[urlExt] || filename === '导出文档.docx') {
             const urlParts = url.split('/');
             const lastPart = urlParts[urlParts.length - 1];
             if (lastPart) filename = decodeURIComponent(lastPart);

@@ -2538,6 +2538,16 @@ html { scroll-behavior: smooth; }
     transform: translateY(0);
     box-shadow: none;
 }
+/* xlsx 下载按钮样式（绿色系，区别于 docx 的蓝色系） */
+.doc-download-btn[href*=".xlsx"],
+.doc-download-btn.xlsx-btn {
+    background: linear-gradient(135deg, #10b981, #059669);
+}
+.doc-download-btn[href*=".xlsx"]:hover,
+.doc-download-btn.xlsx-btn:hover {
+    background: linear-gradient(135deg, #059669, #047857);
+    box-shadow: 0 4px 12px rgba(5, 150, 105, 0.3);
+}
 .modal .doc-empty { text-align: center; padding: 24px; color: var(--text-secondary); font-size: 14px; }
 .modal .close-btn { margin-top: 16px; width: 100%; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border); font-weight: 500; }
 .modal .close-btn:hover { background: #e8e8e9; }
