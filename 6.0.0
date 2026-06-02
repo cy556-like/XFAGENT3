@@ -1,0 +1,10 @@
+Collecting duckduckgo-search
+  Downloading duckduckgo_search-8.1.1-py3-none-any.whl.metadata (16 kB)
+Requirement already satisfied: click>=8.1.8 in c:\program files\python311\lib\site-packages (from duckduckgo-search) (8.4.0)
+Collecting primp>=0.15.0 (from duckduckgo-search)
+  Downloading primp-1.3.0-cp310-abi3-win_amd64.whl.metadata (3.8 kB)
+Requirement already satisfied: lxml>=5.3.0 in c:\program files\python311\lib\site-packages (from duckduckgo-search) (6.1.1)
+Requirement already satisfied: colorama in c:\program files\python311\lib\site-packages (from click>=8.1.8->duckduckgo-search) (0.4.6)
+Downloading duckduckgo_search-8.1.1-py3-none-any.whl (18 kB)
+Downloading primp-1.3.0-cp310-abi3-win_amd64.whl (4.7 MB)
+                                            0.1/4.7 MB 1.7 kB/s eta 0:44:31

@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>XF模具智能体平台</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-96.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
+    <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="ForgeAgent">
+    <meta name="theme-color" content="#0C1629">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css">
+    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebarMobile()"></div>
+<div class="toast" id="toast" role="alert" aria-live="polite"></div>
+
+<!-- ========== Landing Page ========== -->
+<div class="landing-page" id="loginPage" role="main" aria-label="产品介绍页">
+
+    <!-- Navigation -->
+    <nav class="landing-nav" id="landingNav">
+        <div class="nav-inner">
+            <div class="nav-brand">
+                <img class="nav-logo-img" src="/static/icons/icon-96.png" alt="XF模具智能体平台">
+                <span class="nav-title">XF模具智能体平台</span>
+            </div>
+            <div class="nav-links">
+                <a href="#agents" class="nav-link">智能体</a>
+                <a href="#capabilities" class="nav-link">核心能力</a>
+                <a href="#scenarios" class="nav-link">应用场景</a>
+                <a href="#faq" class="nav-link">常见问题</a>
+            </div>
+            <div class="nav-actions">
+                <button class="btn-nav-install" id="pwaInstallBtn" onclick="installPWA()" aria-label="安装App" style="display:none;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    安装App
+                </button>
+                <a class="btn-nav-download" href="/static/DocAgent.apk" download="ForgeAgent.apk" aria-label="下载APP">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+                    下载APP
+                </a>
+                <button class="btn-nav-login" onclick="openLoginModal()" aria-label="登录">登录</button>
+                <button class="btn-nav-trial" onclick="openTrialModal()" aria-label="免费开始">免费开始</button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 1. Hero Section — Centered ChatGPT-style -->
+    <section class="lp-hero">
+        <div class="lp-hero-grid"></div>
+        <div class="lp-hero-inner">
+            <div class="lp-hero-content reveal">
+                <div class="lp-hero-badge">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#06B6D4" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                    AI-Powered Mold Intelligence Platform
+                </div>
+                <h1 class="lp-hero-title seri-font">XF模具智能体平台</h1>
+                <p class="lp-hero-subtitle">专业模具AI智能体，独立赋能研发与质量管理</p>
+                <p class="lp-hero-desc">两大专业智能体独立运行，各自拥有独立知识库：XF模具研发智能体驱动技术创新，XF模具质量智能体守护品质标准。基于VDA6.4与ISO9000体系，分别覆盖模具研发与质量管理全流程。</p>
+                <div class="lp-hero-cta">
+                    <button class="btn-hero-primary" onclick="openTrialModal()">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                        免费体验
+                    </button>
+                    <button class="btn-hero-secondary" onclick="openLoginModal()">登录工作台</button>
+                </div>
+            </div>
+            <div class="lp-hero-visual reveal">
+                <div class="hero-demo-card">
+                    <div class="demo-card-header">
+                        <span class="demo-dot" style="background:#EF4444;"></span>
+                        <span class="demo-dot" style="background:#06B6D4;"></span>
+                        <span class="demo-dot" style="background:#10B981;"></span>
+                        <span class="demo-title">XF模具智能体平台</span>
+                    </div>
+                    <div class="demo-card-body">
+                        <div class="demo-msg demo-msg-user">
+                            <span>我们的模具设计评审流程需要优化，有什么建议？</span>
+                        </div>
+                        <div class="demo-msg demo-msg-ai">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#06B6D4" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg>
+                            <span>根据VDA6.4标准P2过程要求，建议从以下维度优化：1. 明确设计输入评审节点 → 2. 引入DFMEA风险分析 → 3. 设定设计验证里程碑 → 4. 建立设计变更控制流程。研发智能体可协助生成评审检查表。</span>
+                        </div>
+                        <div class="demo-tools">
+                            <span class="demo-tool demo-tool-active">研发智能体</span>
+                            <span class="demo-tool demo-tool-active">质量智能体</span>
+                            <span class="demo-tool">知识库</span>
+                            <span class="demo-tool">VDA6.4</span>
+                        </div>
+                        <div class="demo-success">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10B981" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                            智能体已基于质量手册提供专业建议
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 2. Stats Bar -->
+    <section class="lp-stats">
+        <div class="lp-stats-inner">
+            <div class="lp-stat-item reveal">
+                <div class="lp-stat-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06B6D4" stroke-width="1.8" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+                </div>
+                <div class="lp-stat-number">2</div>
+                <div class="lp-stat-label">专业智能体</div>
+            </div>
+            <div class="lp-stat-divider"></div>
+            <div class="lp-stat-item reveal">
+                <div class="lp-stat-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="1.8" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                </div>
+                <div class="lp-stat-number">VDA6.4</div>
+                <div class="lp-stat-label">质量体系标准</div>
+            </div>
+            <div class="lp-stat-divider"></div>
+            <div class="lp-stat-item reveal">
+                <div class="lp-stat-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#10B981" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                </div>
+                <div class="lp-stat-number">7×24</div>
+                <div class="lp-stat-label">全天候服务</div>
+            </div>
+            <div class="lp-stat-divider"></div>
+            <div class="lp-stat-item reveal">
+                <div class="lp-stat-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" stroke-width="1.8" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
+                </div>
+                <div class="lp-stat-number">ISO9000</div>
+                <div class="lp-stat-label">基础术语体系</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 3. Two Agents Introduction -->
+    <section class="lp-features" id="agents">
+        <div class="section-inner">
+            <div class="section-header reveal">
+                <h2 class="section-title seri-font">两大专业智能体</h2>
+                <p class="section-desc">研发驱动创新，质量守护标准——两大智能体各自独立，各擅其专</p>
+            </div>
+            <div class="lp-agents-grid">
+                <!-- XF模具研发智能体 -->
+                <div class="lp-agent-card lp-agent-card--rd reveal">
+                    <div class="lp-agent-card-accent"></div>
+                    <div class="lp-agent-card-body">
+                        <div class="lp-feature-icon" style="--icon-color:#06B6D4;">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#06B6D4" stroke-width="2" stroke-linecap="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                        </div>
+                        <h3 class="lp-feature-title">XF模具研发智能体</h3>
+                        <p class="lp-feature-desc">专注于模具研发全流程，精通模具设计方法论、材料选型、工艺规划与开发验证。核心能力涵盖：</p>
+                        <ul class="lp-agent-list">
+                            <li>模具结构设计与优化建议</li>
+                            <li>材料性能分析与选型推荐</li>
+                            <li>成型工艺参数规划</li>
+                            <li>设计评审与FMEA风险分析</li>
+                            <li>试模问题诊断与改进方案</li>
+                            <li>技术文档生成与知识沉淀</li>
+                        </ul>
+                        <div class="lp-agent-tags">
+                            <span class="lp-agent-tag lp-agent-tag--rd">模具设计</span>
+                            <span class="lp-agent-tag lp-agent-tag--rd">工艺规划</span>
+                            <span class="lp-agent-tag lp-agent-tag--rd">DFMEA</span>
+                            <span class="lp-agent-tag lp-agent-tag--rd">试模验证</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- XF模具质量智能体 -->
+                <div class="lp-agent-card lp-agent-card--qa reveal">
+                    <div class="lp-agent-card-accent"></div>
+                    <div class="lp-agent-card-body">
+                        <div class="lp-feature-icon" style="--icon-color:#10B981;">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#10B981" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                        </div>
+                        <h3 class="lp-feature-title">XF模具质量智能体</h3>
+                        <p class="lp-feature-desc">精通VDA6.4:2017质量管理体系及ISO9000:2015基础术语，依据《XF模具VDA6.4质量手册》提供专业服务：</p>
+                        <ul class="lp-agent-list">
+                            <li>质量方针解读与过程分析</li>
+                            <li>COP/MP/SP三大过程乌龟图分析</li>
+                            <li>风险与机遇识别评估</li>
+                            <li>内部体系审核指导</li>
+                            <li>纠正预防措施(CAPA)建议</li>
+                            <li>不合格品控制与持续改进</li>
+                        </ul>
+                        <div class="lp-agent-tags">
+                            <span class="lp-agent-tag lp-agent-tag--qa">VDA6.4</span>
+                            <span class="lp-agent-tag lp-agent-tag--qa">ISO9000</span>
+                            <span class="lp-agent-tag lp-agent-tag--qa">CAPA</span>
+                            <span class="lp-agent-tag lp-agent-tag--qa">过程审核</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 4. Core Capabilities -->
+    <section class="lp-capabilities" id="capabilities">
+        <div class="section-inner">
+            <div class="section-header reveal">
+                <h2 class="section-title seri-font">核心能力</h2>
+                <p class="section-desc">智能体驱动的四大核心能力，分别赋能模具研发与质量管理</p>
+            </div>
+            <div class="lp-caps-grid">
+                <div class="lp-cap-card reveal">
+                    <div class="lp-cap-icon" style="--icon-color:#06B6D4;">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#06B6D4" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+                    </div>
+                    <h3 class="lp-cap-title">知识库问答</h3>
+                    <p class="lp-cap-desc">上传质量手册、技术规范等文档，智能体基于知识库精准回答，支持PDF/Word/TXT格式</p>
+                </div>
+                <div class="lp-cap-card reveal">
+                    <div class="lp-cap-icon" style="--icon-color:#2563EB;">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+                    </div>
+                    <h3 class="lp-cap-title">智能推理</h3>
+                    <p class="lp-cap-desc">基于ReAct推理架构，智能体自主规划任务步骤，联动知识库与工具链完成复杂分析</p>
+                </div>
+                <div class="lp-cap-card reveal">
+                    <div class="lp-cap-icon" style="--icon-color:#10B981;">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#10B981" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
+                    </div>
+                    <h3 class="lp-cap-title">标准合规</h3>
+                    <p class="lp-cap-desc">严格遵循VDA6.4与ISO9000标准要求，确保回答符合四级文件管理体系与行业规范</p>
+                </div>
+                <div class="lp-cap-card reveal">
+                    <div class="lp-cap-icon" style="--icon-color:#8B5CF6;">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    </div>
+                    <h3 class="lp-cap-title">全流程覆盖</h3>
+                    <p class="lp-cap-desc">覆盖模具设计开发、采购、生产、调试、交付与服务全流程，持续改进与顾客满意</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 5. Technology Stack — 2×2 Grid -->
+    <section class="lp-techstack">
+        <div class="section-inner">
+            <div class="section-header reveal">
+                <h2 class="section-title seri-font">技术底座</h2>
+                <p class="section-desc">四大技术支柱，构建企业级 AI Agent 基础设施</p>
+            </div>
+            <div class="lp-tech-grid">
+                <div class="lp-tech-card reveal">
+                    <div class="lp-tech-icon">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#06B6D4" stroke-width="1.8"><path d="M12 2a10 10 0 110 20 10 10 0 010-20z"/><path d="M2 12h20"/><path d="M12 2a15 15 0 014 10 15 15 0 01-4 10 15 15 0 01-4-10 15 15 0 014-10z"/></svg>
+                    </div>
+                    <h3>LLM 引擎</h3>
+                    <p>多模型适配层，支持 GPT-4、Claude、Gemini 等主流大模型，智能路由最优模型</p>
+                    <div class="lp-tech-tags">
+                        <span>GPT-4</span><span>Claude</span><span>Gemini</span>
+                    </div>
+                </div>
+                <div class="lp-tech-card reveal">
+                    <div class="lp-tech-icon">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="1.8"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                    </div>
+                    <h3>ReAct 框架</h3>
+                    <p>推理-行动循环架构，Agent 自主规划任务链路，动态选择工具，实现复杂任务分解</p>
+                    <div class="lp-tech-tags">
+                        <span>推理</span><span>规划</span><span>反思</span>
+                    </div>
+                </div>
+                <div class="lp-tech-card reveal">
+                    <div class="lp-tech-icon">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#10B981" stroke-width="1.8"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg>
+                    </div>
+                    <h3>向量数据库</h3>
+                    <p>企业知识库向量化存储与检索，RAG 增强生成，确保 Agent 回答精准可靠</p>
+                    <div class="lp-tech-tags">
+                        <span>RAG</span><span>Embedding</span><span>语义检索</span>
+                    </div>
+                </div>
+                <div class="lp-tech-card reveal">
+                    <div class="lp-tech-icon">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" stroke-width="1.8"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+                    </div>
+                    <h3>工具链</h3>
+                    <p>50+ 内置工具与自定义 API 插件，Agent 可自主调用完成搜索、分析、生成等任务</p>
+                    <div class="lp-tech-tags">
+                        <span>搜索</span><span>API</span><span>代码执行</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 6. Application Scenarios — with numbered badges -->
+    <section class="lp-scenarios" id="scenarios">
+        <div class="section-inner">
+            <div class="section-header reveal">
+                <h2 class="section-title seri-font">应用场景</h2>
+                <p class="section-desc">智能体赋能模具业务核心场景，从研发创新到质量保障</p>
+            </div>
+            <div class="lp-scenarios-grid">
+                <div class="lp-scenario-card reveal">
+                    <div class="lp-scenario-num">01</div>
+                    <div class="lp-scenario-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#06B6D4" stroke-width="1.8" stroke-linecap="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
+                    <h4 class="lp-scenario-title">模具设计评审</h4>
+                    <p class="lp-scenario-desc">研发智能体协助进行结构设计评审，识别潜在风险，提供优化建议与DFMEA分析</p>
+                </div>
+                <div class="lp-scenario-card reveal">
+                    <div class="lp-scenario-num">02</div>
+                    <div class="lp-scenario-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#10B981" stroke-width="1.8" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+                    <h4 class="lp-scenario-title">质量体系审核</h4>
+                    <p class="lp-scenario-desc">质量智能体指导VDA6.4过程审核，生成检查清单，识别不符合项并提出纠正措施</p>
+                </div>
+                <div class="lp-scenario-card reveal">
+                    <div class="lp-scenario-num">03</div>
+                    <div class="lp-scenario-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="1.8" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/><path d="M9 15l2 2 4-4"/></svg></div>
+                    <h4 class="lp-scenario-title">工艺参数优化</h4>
+                    <p class="lp-scenario-desc">研发智能体分析成型工艺参数，结合材料特性与产品要求，推荐最优工艺方案</p>
+                </div>
+                <div class="lp-scenario-card reveal">
+                    <div class="lp-scenario-num">04</div>
+                    <div class="lp-scenario-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg></div>
+                    <h4 class="lp-scenario-title">不合格品分析</h4>
+                    <p class="lp-scenario-desc">质量智能体分析不合格品原因，追溯过程控制点，制定纠正预防措施与控制方案</p>
+                </div>
+                <div class="lp-scenario-card reveal">
+                    <div class="lp-scenario-num">05</div>
+                    <div class="lp-scenario-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#06B6D4" stroke-width="1.8" stroke-linecap="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg></div>
+                    <h4 class="lp-scenario-title">试模问题诊断</h4>
+                    <p class="lp-scenario-desc">研发智能体根据试模缺陷现象，诊断问题根因，给出修模建议与验证方案</p>
+                </div>
+                <div class="lp-scenario-card reveal">
+                    <div class="lp-scenario-num">06</div>
+                    <div class="lp-scenario-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#10B981" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg></div>
+                    <h4 class="lp-scenario-title">过程乌龟图分析</h4>
+                    <p class="lp-scenario-desc">质量智能体针对COP/MP/SP过程，生成乌龟图分析，明确输入输出与KPI指标</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 7. FAQ Section -->
+    <section class="lp-faq" id="faq">
+        <div class="section-inner">
+            <div class="lp-faq-layout">
+                <div class="lp-faq-left reveal">
+                    <h2 class="lp-faq-title seri-font">常见问题</h2>
+                    <p class="lp-faq-subtitle">关于 XF模具智能体平台，你可能想知道的</p>
+                </div>
+                <div class="lp-faq-right reveal">
+                    <div class="lp-faq-item" onclick="toggleFaq(this)">
+                        <div class="lp-faq-q"><span>如何开始使用XF模具智能体？</span><svg class="lp-faq-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#64748B" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></div>
+                        <div class="lp-faq-a"><p>登录平台后即可直接使用XF模具研发智能体和XF模具质量智能体，无需任何配置。研发智能体协助模具设计、工艺规划与试模诊断；质量智能体提供VDA6.4体系审核、CAPA建议与过程分析。上传企业知识库文档后，智能体回答将更加精准。</p></div>
+                    </div>
+                    <div class="lp-faq-item" onclick="toggleFaq(this)">
+                        <div class="lp-faq-q"><span>Agent 的行为是否安全可控？</span><svg class="lp-faq-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#64748B" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></div>
+                        <div class="lp-faq-a"><p>完全可控。XF模具智能体平台 内置安全护栏机制，你可以为 Agent 设定行为边界、输出规则与敏感词过滤。每次 Agent 的工具调用、推理路径与输出结果均有完整日志，支持全链路追溯审计。</p></div>
+                    </div>
+                    <div class="lp-faq-item" onclick="toggleFaq(this)">
+                        <div class="lp-faq-q"><span>支持哪些工具和集成？</span><svg class="lp-faq-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#64748B" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></div>
+                        <div class="lp-faq-a"><p>内置知识库检索、联网搜索、数据分析、文档生成等核心工具。企业版支持通过 RESTful API 对接企业内部系统（如 CRM、ERP、OA），也可自定义 Python/Node.js 工具插件，实现深度集成。</p></div>
+                    </div>
+                    <div class="lp-faq-item" onclick="toggleFaq(this)">
+                        <div class="lp-faq-q"><span>Agent 能同时处理多个任务吗？</span><svg class="lp-faq-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#64748B" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></div>
+                        <div class="lp-faq-a"><p>可以。XF模具智能体平台的 ReAct 推理引擎支持多步任务自动拆解与并行执行。Agent 会根据任务复杂度自主规划执行链路，串联多个工具调用，最终汇总结果交付。</p></div>
+                    </div>
+                    <div class="lp-faq-item" onclick="toggleFaq(this)">
+                        <div class="lp-faq-q"><span>免费版和企业版有什么区别？</span><svg class="lp-faq-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#64748B" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></div>
+                        <div class="lp-faq-a"><p>免费版可创建 3 个 Agent，每日 20 次对话，适合个人体验评估。个人版支持 50 个 Agent 与每日 200 次对话，解锁联网搜索与深度思考。企业版不限 Agent 数量与对话次数，支持私有化部署、API 集成与专属技术支持。</p></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+
+    <!-- 8. CTA Section -->
+    <section class="lp-cta">
+        <div class="lp-cta-inner reveal">
+            <h2 class="lp-cta-title seri-font">开启XF模具智能体之旅</h2>
+            <p class="lp-cta-desc">研发与质量两大独立智能体，7×24 专业服务，各自深耕专业领域</p>
+            <div class="lp-cta-btns">
+                <button class="btn-hero-primary" onclick="openTrialModal()">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                    免费开始
+                </button>
+                <button class="btn-hero-secondary btn-hero-secondary--cta" onclick="openLoginModal()">登录工作台</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="lp-footer">
+        <div class="lp-footer-inner">
+            <div class="lp-footer-brand">
+                <img class="nav-logo-img" src="/static/icons/icon-96.png" alt="XF模具智能体平台">
+                <span class="lp-footer-name">XF模具智能体平台</span>
+            </div>
+            <div class="lp-footer-links">
+                <a href="#agents">智能体</a>
+                <a href="#capabilities">核心能力</a>
+                <a href="#scenarios">应用场景</a>
+                <a href="#faq">常见问题</a>
+            </div>
+            <div class="lp-footer-copy">&copy; 2025 XF模具智能体平台. All rights reserved.</div>
+        </div>
+    </footer>
+
+</div><!-- /landing-page -->
+
+<!-- ========== Login Modal ========== -->
+<div class="modal-overlay" id="loginModal" role="dialog" aria-label="登录" aria-modal="true">
+    <div class="login-fullscreen">
+        <!-- Left: Brand Panel -->
+        <div class="login-brand-panel">
+            <div class="login-brand-mesh"></div>
+            <div class="login-brand-content">
+                <div class="login-brand-logo">
+                    <img src="/static/icons/icon-96.png" alt="XF模具智能体平台">
+                </div>
+                <h2 class="login-brand-title seri-font">XF模具智能体平台</h2>
+                <p class="login-brand-desc">专业模具AI智能体，独立赋能研发与质量管理</p>
+                <div class="login-brand-features">
+                    <div class="brand-feature-item">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                        <span>VDA6.4 质量体系合规</span>
+                    </div>
+                    <div class="brand-feature-item">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                        <span>7×24 全天候智能服务</span>
+                    </div>
+                    <div class="brand-feature-item">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                        <span>独立智能体各擅其专</span>
+                    </div>
+                </div>
+            </div>
+            <div class="login-brand-footer">&copy; 2025 XF模具智能体平台</div>
+        </div>
+        <!-- Right: Form Panel -->
+        <div class="login-form-panel">
+            <button class="modal-close-btn" onclick="closeLoginModal()" aria-label="关闭">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+            <div class="login-form-content">
+                <div class="login-form-header">
+                    <h3 id="loginModalTitle" class="seri-font">登录智能体工作台</h3>
+                    <p class="login-subtitle" id="loginModalSubtitle">登录您的账号以继续</p>
+                </div>
+                <div class="login-modal-body">
+                    <div class="tab-bar" role="tablist">
+                        <div class="tab active" onclick="switchTab('login')" role="tab" aria-selected="true" tabindex="0">登录</div>
+                        <div class="tab" onclick="switchTab('register')" role="tab" aria-selected="false" tabindex="0">注册</div>
+                        <div class="tab-indicator"></div>
+                    </div>
+                    <div id="loginForm" role="tabpanel">
+                        <div class="form-group"><label for="loginUser">用户名</label><input type="text" id="loginUser" placeholder="输入用户名" autocomplete="username"></div>
+                        <div class="form-group"><label for="loginPass">密码</label><input type="password" id="loginPass" placeholder="输入密码" onkeydown="if(event.key==='Enter')doLogin()" autocomplete="current-password"></div>
+                        <button class="btn btn-login" onclick="doLogin()" aria-label="登录">登 录</button>
+                        <div class="msg-box" id="loginMsg" role="status" aria-live="polite"></div>
+                    </div>
+                    <div id="registerForm" style="display:none" role="tabpanel">
+                        <div class="form-group"><label for="regUser">用户名</label><input type="text" id="regUser" placeholder="至少2个字符" autocomplete="username"></div>
+                        <div class="form-group"><label for="regPass">密码</label><input type="password" id="regPass" placeholder="至少4个字符" onkeydown="if(event.key==='Enter')doRegister()" autocomplete="new-password"></div>
+                        <button class="btn btn-login" onclick="doRegister()" aria-label="注册">注 册</button>
+                        <div class="msg-box" id="regMsg" role="status" aria-live="polite"></div>
+                    </div>
+                </div>
+                <div class="login-divider"><span>或通过以下方式</span></div>
+                <button class="login-sso-btn" type="button">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                    企业 SSO 单点登录
+                </button>
+                <div class="login-bottom-links">
+                    <a href="javascript:void(0)">忘记密码?</a>
+                    <a href="javascript:void(0)">联系IT管理员</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Chat Page -->
+<div class="chat-page" id="chatPage" role="main">
+    <aside class="sidebar" id="sidebar" role="navigation" aria-label="对话列表">
+        <div class="sidebar-header">
+            <div class="sidebar-brand" id="sidebarBrand"><img class="sidebar-brand-icon" src="/static/icons/icon-96.png" alt="XF模具智能体平台"><span class="sidebar-brand-name">XF模具智能体平台</span></div>
+            <div class="sidebar-section-title" id="agentsSectionTitle"><span class="section-title-icon">🤖</span><span class="section-title-text">智能体</span></div>
+            <div class="sidebar-agents-list" id="myAgentsList"></div>
+            <div class="sidebar-section-title" id="freeChatSectionTitle"><span class="section-title-icon">💬</span><span class="section-title-text">自由对话</span></div>
+            <div class="mode-switcher-box" id="modeSwitcherBox" role="radiogroup" aria-label="模式切换">
+                <button class="mode-btn" id="modeChat" onclick="switchMode('chat')" role="radio" aria-checked="false" aria-label="Chat模式"><span class="mode-icon">💬</span><span class="mode-label">Chat</span></button>
+                <button class="mode-btn active" id="modeAgent" onclick="switchMode('agent')" role="radio" aria-checked="true" aria-label="Agent模式"><span class="mode-icon">🤖</span><span class="mode-label">Agent</span></button>
+            </div>
+            <button class="new-chat-btn" onclick="createNewChat()" aria-label="新建对话"><span class="plus-icon">+</span><span>新建对话</span></button>
+            <div class="chat-search" id="chatSearch"><span class="search-icon">🔍</span><input type="text" id="chatSearchInput" placeholder="搜索对话..." oninput="filterChats(this.value)" aria-label="搜索对话"></div>
+        </div>
+            <div class="chat-list" id="chatList" role="list" aria-label="会话列表"></div>
+        <div class="sidebar-footer"><div class="user-avatar" id="sidebarAvatar" aria-hidden="true">U</div><div class="user-name" id="sidebarUsername">用户</div><button class="logout-btn" onclick="doLogout()" title="退出登录" aria-label="退出登录">⏻</button></div>
+    </aside>
+    <div class="chat-main">
+        <header class="chat-header">
+            <button class="toggle-sidebar-btn" onclick="toggleSidebar()" title="切换侧边栏" aria-label="切换侧边栏">☰</button>
+            <h1 id="chatTitle">XF模具智能体平台</h1>
+            <div class="header-actions">
+                <button class="header-btn" onclick="toggleTheme()" title="切换暗色/亮色模式" id="themeBtn" aria-label="切换主题">🌙</button>
+                <select class="model-select" id="modelSelect" onchange="switchModel()" title="切换模型" aria-label="选择模型"></select>
+                <div class="export-wrapper"><button class="header-btn" onclick="toggleExportDropdown()" title="导出对话" aria-label="导出对话" aria-haspopup="true">📥 导出</button><div class="export-dropdown" id="exportDropdown" role="menu"><button onclick="exportChat('md')" role="menuitem">📝 Markdown</button><button onclick="exportChat('pdf')" role="menuitem">📄 PDF</button></div></div>
+                <div class="export-wrapper" id="headerKbWrapper" style="display:none;"><button class="header-btn kb-btn" onclick="toggleKbPanel()" title="知识库" aria-label="知识库" aria-haspopup="true">📚 知识库</button><div class="kb-panel" id="kbPanel"><div class="kb-panel-header"><h4>知识库</h4><span class="kb-agent-name" id="kbAgentName">未选择智能体</span></div><div class="kb-panel-upload"><button class="kb-upload-btn" onclick="document.getElementById('headerKbFileInput').click()">📤 上传文档</button><input type="file" id="headerKbFileInput" accept=".pdf,.txt,.docx" onchange="uploadKbDoc(this)" style="display:none"></div><div class="kb-panel-list" id="kbDocList"><div class="kb-empty">加载中...</div></div></div></div>
+                <button class="header-btn danger" onclick="clearCurrentChat()" aria-label="清除当前对话">清除当前</button>
+            </div>
+        </header>
+        <div class="chat-content centered" id="chatContent">
+            <div class="welcome-center" id="welcomeCenter"><h2>XF模具智能体平台</h2><p>专业模具AI智能体，独立赋能研发与质量管理</p><div class="quick-actions"><span class="quick-action" onclick="sendQuick('模具设计评审有哪些关键节点？')" role="button" tabindex="0">设计评审</span><span class="quick-action" onclick="sendQuick('VDA6.4过程审核要点是什么？')" role="button" tabindex="0">过程审核</span><span class="quick-action" onclick="sendQuick('帮我分析DFMEA风险')" role="button" tabindex="0">DFMEA分析</span><span class="quick-action" onclick="sendQuick('不合格品纠正措施怎么制定？')" role="button" tabindex="0">CAPA建议</span></div></div>
+            <div class="chat-messages" id="chatMessages" role="log" aria-label="对话消息" aria-live="polite"></div>
+            <button class="scroll-bottom-btn" id="scrollBottomBtn" onclick="scrollToBottom()" title="滚动到底部" aria-label="滚动到底部">↓</button>
+            <div class="typing-indicator" id="typingIndicator" aria-hidden="true"><div style="display:flex;align-items:center;gap:12px;"><div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div></div></div>
+            <div class="chat-input-area"><div class="input-container"><div class="file-bar" id="fileBar"><span id="fileIcon">📎</span><span class="file-name" id="fileName"></span><span class="remove-file" onclick="removeFile()" role="button" aria-label="移除文件">✕</span></div><div class="agent-kb-bar" id="agentKbBar" style="display:none;">
+                    <span class="kb-bar-icon">📚</span>
+                    <span class="kb-bar-text">知识库上传模式</span>
+                    <span class="kb-bar-hint">下一个文件将上传到当前智能体的专属知识库</span>
+                    <span class="kb-bar-remove" onclick="toggleAgentKbUpload()" role="button" aria-label="关闭">✕</span>
+                </div>
+            <div class="input-top"><textarea id="msgInput" rows="1" placeholder="输入问题，或粘贴/拖拽文件..." onkeydown="handleKey(event)" oninput="autoResize(this)" aria-label="输入消息"></textarea><div class="send-btn-wrap"><button class="icon-btn send" id="sendBtn" onclick="sendMessage()" title="发送" aria-label="发送消息">➤</button><button class="icon-btn stop" id="stopBtn" onclick="stopGeneration()" title="停止生成" style="display:none;" aria-label="停止生成">■</button></div></div><div class="input-toolbar"><button class="toolbar-btn" onclick="document.getElementById('fileInput').click()" title="上传文件或图片" aria-label="上传文件">📎</button><button class="toolbar-btn kb-upload-btn" id="kbUploadToggle" onclick="toggleAgentKbUpload()" title="上传到智能体知识库" aria-label="上传到知识库">📚</button><button class="web-search-toggle" id="webSearchToggle" onclick="toggleWebSearch()" title="开启/关闭联网搜索" aria-label="联网搜索" aria-pressed="false"><span class="toggle-icon">🌐</span><span class="toggle-label">联网搜索</span></button><button class="deep-think-toggle" id="deepThinkToggle" onclick="toggleDeepThink()" title="开启/关闭深度思考" aria-label="深度思考" aria-pressed="false"><span class="toggle-icon">🧠</span><span class="toggle-label">深度思考</span></button></div></div></div>
+        </div>
+        <input type="file" id="fileInput" accept=".pdf,.txt,.docx,.png,.jpg,.jpeg,.gif,.bmp,.webp,.csv,.xlsx,.xls,.doc,.ppt,.pptx,.md,.json,.py,.js,.html,.css" onchange="onFileSelected(event)" aria-hidden="true">
+    </div>
+</div>
+
+
+
+<!-- Agent Edit Modal -->
+<div class="modal-overlay" id="agentEditModal" role="dialog" aria-label="编辑智能体" aria-modal="true">
+    <div class="agent-create-modal">
+        <button class="modal-close-btn" onclick="closeAgentEditModal()" aria-label="关闭">&times;</button>
+        <div class="agent-create-inner">
+            <div class="agent-create-header">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="1.8" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                <h3>编辑智能体</h3>
+                <p>修改智能体名称与提示词</p>
+            </div>
+            <div class="agent-create-body">
+                <div class="form-group">
+                    <label for="editAgentName">智能体名称</label>
+                    <input type="text" id="editAgentName" placeholder="智能体名称" maxlength="30" readonly style="background:#f3f4f6;color:#9ca3af;cursor:not-allowed;">
+                </div>
+                <div class="form-group">
+                    <label for="editAgentTask">提示词 / 任务描述</label>
+                    <textarea id="editAgentTask" rows="6" placeholder="描述智能体的职责与行为规则"></textarea>
+                </div>
+            </div>
+            <div class="agent-create-footer">
+                <button class="btn btn-cancel" onclick="closeAgentEditModal()">取消</button>
+                <button class="btn btn-forge" onclick="saveAgentEdit()">保存修改</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Knowledge Base Modal -->
+<div class="modal-overlay" id="docsModal" role="dialog" aria-label="知识库管理" aria-modal="true">
+    <div class="modal"><h3>知识库管理</h3><div class="upload-section" id="uploadZone" onclick="document.getElementById('kbFileInput').click()" role="button" aria-label="上传文档"><div class="upload-icon">📤</div><div class="upload-text">点击或拖拽文件到此处 <strong>上传到知识库</strong></div><div class="upload-hint">支持 PDF、TXT、DOCX 格式</div></div><input type="file" id="kbFileInput" accept=".pdf,.txt,.docx" onchange="onKbFileSelected(event)" multiple aria-hidden="true"><div class="upload-progress" id="uploadProgress" role="progressbar"><div class="progress-file" id="progressFileName">正在上传...</div><div class="progress-bar-bg"><div class="progress-bar-fill" id="progressBarFill"></div></div><div class="progress-status" id="progressStatus">上传中...</div></div><div class="divider">已索引文档</div><div class="doc-list" id="docList" role="list"><div class="doc-empty">加载中...</div></div><button class="btn btn-primary close-btn" onclick="closeDocs()" aria-label="关闭">关闭</button></div>
+</div>
+
+<!-- Rename Overlay -->
+<div class="rename-overlay" id="renameOverlay" role="dialog" aria-label="重命名对话" aria-modal="true">
+    <div class="rename-card"><h3>重命名对话</h3><input type="text" id="renameInput" placeholder="输入新名称" onkeydown="if(event.key==='Enter')confirmRename()" aria-label="新名称"><div class="rename-btns"><button class="cancel-btn" onclick="cancelRename()" aria-label="取消">取消</button><button class="confirm-btn" onclick="confirmRename()" aria-label="确认重命名">确认</button></div></div>
+</div>
+
+<script>
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function() {
+        navigator.serviceWorker.register('/static/sw.js').then(function(reg) {
+            console.log('SW registered:', reg.scope);
+            reg.addEventListener('updatefound', function() {
+                var newWorker = reg.installing;
+                newWorker.addEventListener('statechange', function() {
+                    if (newWorker.state === 'installed' && navigator.serviceWorker.controller) { console.log('New SW available'); }
+                });
+            });
+        }).catch(function(err) { console.warn('SW registration failed:', err); });
+    });
+}
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', function(e) {
+    e.preventDefault(); deferredPrompt = e;
+    var installBtn = document.getElementById('pwaInstallBtn');
+    if (installBtn) installBtn.style.display = 'flex';
+});
+function installPWA() {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(function(choice) {
+        if (choice.outcome === 'accepted') showToast('ForgeAgent 已添加到桌面');
+        deferredPrompt = null;
+        var installBtn = document.getElementById('pwaInstallBtn');
+        if (installBtn) installBtn.style.display = 'none';
+    });
+}
+</script>
+<script>
+function toggleFaq(el) {
+    const isActive = el.classList.contains('active');
+    document.querySelectorAll('.lp-faq-item').forEach(function(item) { item.classList.remove('active'); });
+    if (!isActive) el.classList.add('active');
+}
+</script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

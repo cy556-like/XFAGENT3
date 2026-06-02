@@ -1,0 +1,5 @@
+	conda activate agent	激活虚拟环境
+2	cd C:\Users\admin\PycharmProjects\pythonProject1\company-doc-agent	进入项目目录
+3	python app/main.py	启动 Agent
+4	cd C:\cpolar	进入 cpolar 目录
+5	cpolar.exe http 8000
