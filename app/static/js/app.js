@@ -27,11 +27,12 @@ const _SYNC_AGENTS_COOLDOWN = 5000;  // 5秒内不重复同步
 let _lastSyncedAgentsHash = '';
 
 // ===== Agent Management =====
-// 强制只保留2个允许的智能体
+// 强制只保留2个允许的智能体（内置ID白名单）
 const ALLOWED_AGENT_IDS = ['xf-rd-agent', 'xf-quality-agent'];
 
 function forceCorrectAgents() {
-    const existing = JSON.parse(localStorage.getItem('forgeAgents') || '[]');
+    let existing = [];
+    try { existing = JSON.parse(localStorage.getItem('forgeAgents') || '[]'); } catch(e) { existing = []; }
     const existingMap = {};
     existing.forEach(a => { existingMap[a.id] = a; });
 
@@ -62,17 +63,15 @@ function forceCorrectAgents() {
 
 function filterAgents(agents) {
     if (!agents || !Array.isArray(agents)) return forceCorrectAgents();
-    const allowedIds = ['xf-rd-agent', 'xf-quality-agent'];
-    const filtered = agents.filter(a => allowedIds.includes(a.id));
-    // If we already have exactly the 2 correct agents with chat_ids, just return them (preserving chat_ids etc)
-    if (filtered.length === 2 && filtered.every(a => a.chat_ids !== undefined)) {
-        return filtered;
-    }
-    // Otherwise, force correct but preserve existing data
-    return forceCorrectAgents();
+    // 保留内置智能体 + 用户动态创建的智能体（agent_ 开头）
+    const filtered = agents.filter(a => ALLOWED_AGENT_IDS.includes(a.id) || (a.id && a.id.startsWith('agent_')));
+    // 确保内置智能体一定存在
+    const hasBuiltIn = ALLOWED_AGENT_IDS.every(id => filtered.some(a => a.id === id));
+    if (!hasBuiltIn) return forceCorrectAgents();
+    return filtered;
 }
 
-let myAgents = filterAgents(JSON.parse(localStorage.getItem('forgeAgents') || 'null'));
+let myAgents = filterAgents((function() { try { return JSON.parse(localStorage.getItem('forgeAgents') || 'null'); } catch(e) { return null; } })());
 let currentAgentId = null;
 let agentKbUploadMode = false;
 
@@ -289,6 +288,11 @@ async function createAgent() {
 function deleteAgent(agentId) {
     const agent = myAgents.find(a => a.id === agentId);
     if (!agent) return;
+    // 禁止删除内置智能体
+    if (ALLOWED_AGENT_IDS.includes(agentId)) {
+        showToast('内置智能体不可删除');
+        return;
+    }
     if (!confirm(`确定删除智能体「${agent.name}」？相关对话和知识库也将被删除。`)) return;
     
     // 先删除服务器端的知识库
@@ -375,7 +379,7 @@ function renderMyAgents() {
             switchToAgent(agent.id);
             closeSidebarOnMobile();
         };
-        const initial = agent.name[0].toUpperCase();
+        const initial = (agent.name && agent.name[0] || '?').toUpperCase();
         const summary = agent.summary || (agent.id === 'xf-rd-agent' ? '研发设计与工艺优化' : '质量检测与缺陷控制');
         item.innerHTML = `
             <div class="agent-item-icon">${initial}</div>
@@ -737,12 +741,14 @@ if (typeof marked !== 'undefined') {
 }
 
 // ===== Toast =====
+let _toastTimer = null;
 function showToast(msg, duration) {
     duration = duration || 2000;
     const toast = document.getElementById('toast');
     toast.textContent = msg;
     toast.classList.add('show');
-    setTimeout(() => toast.classList.remove('show'), duration);
+    if (_toastTimer) clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => { toast.classList.remove('show'); _toastTimer = null; }, duration);
 }
 
 // ===== Clipboard =====
@@ -1049,13 +1055,15 @@ function renderChatList() {
             switchChat(chat.chat_id);
             closeSidebarOnMobile();
         };
+        const safeTitle = escapeHtml(chat.title || '新对话');
+        const safeTitleJs = (chat.title || '新对话').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
         const timeStr = formatTime(chat.updated_at || chat.created_at);
         item.innerHTML = `
             <span class="chat-icon">💬</span>
-            <span class="chat-title" title="${escapeHtml(chat.title)}">${escapeHtml(chat.title)}</span>
+            <span class="chat-title" title="${safeTitle}">${safeTitle}</span>
             <span class="chat-time">${timeStr}</span>
             <div class="chat-actions">
-                <button class="chat-action-btn" onclick="openRename('${chat.chat_id}', '${escapeHtml(chat.title)}')" title="重命名" aria-label="重命名对话">✏️</button>
+                <button class="chat-action-btn" onclick="openRename('${chat.chat_id}', '${safeTitleJs}')" title="重命名" aria-label="重命名对话">✏️</button>
                 <button class="chat-action-btn delete" onclick="deleteChatItem('${chat.chat_id}')" title="删除" aria-label="删除对话">🗑️</button>
             </div>
         `;
@@ -1077,7 +1085,7 @@ async function createNewChat() {
                 const agent = myAgents.find(a => a.id === currentAgentId);
                 if (agent) {
                     if (!agent.chat_ids) agent.chat_ids = [];
-                    agent.chat_ids.push(data.chat.chat_id);
+                    if (!agent.chat_ids.includes(data.chat.chat_id)) agent.chat_ids.push(data.chat.chat_id);
                     agentActiveChatId[currentAgentId] = data.chat.chat_id;
                     saveAgentActiveChatIds();
                     saveAgents();
@@ -1412,7 +1420,7 @@ async function streamChat(url, options, bubble) {
                         case 'tool_done': addToolTag(data.display || data.name, true); break;
                         case 'token': addCursor(); appendToken(data.content); fullText += data.content; break;
                         case 'done': finalize(); break;
-                        case 'error': removeThinking(); finalize(); bubble.innerHTML += `<br><span style="color:var(--error)">${escapeHtml(data.content)}</span>`; break;
+                        case 'error': removeThinking(); finalize(); { const errSpan = document.createElement('span'); errSpan.style.color = 'var(--error)'; errSpan.textContent = data.content; bubble.appendChild(document.createElement('br')); bubble.appendChild(errSpan); } break;
                     }
                 } catch (e) { console.warn('SSE parse error:', e, jsonStr); }
             }
@@ -1426,7 +1434,16 @@ async function streamChat(url, options, bubble) {
                 bubble.innerHTML = '（未获取到回复）';
             }
         } else {
+            // 保存已有的 tool 标签，renderBubbleMarkdown 会覆盖 innerHTML
+            const toolTags = Array.from(bubble.querySelectorAll('.tool-tag'));
             renderBubbleMarkdown(bubble, fullText);
+            // 将 tool 标签重新插入到 bubble 开头
+            if (toolTags.length > 0) {
+                const fragment = document.createDocumentFragment();
+                toolTags.forEach(tag => fragment.appendChild(tag));
+                fragment.appendChild(document.createTextNode(' '));
+                bubble.insertBefore(fragment, bubble.firstChild);
+            }
         }
 
     } catch (e) {
@@ -1435,7 +1452,11 @@ async function streamChat(url, options, bubble) {
         if (e.name === 'AbortError') {
             if (fullText) {
                 renderBubbleMarkdown(bubble, fullText);
-                bubble.innerHTML += '<br><span style="color:var(--text-secondary);font-size:13px;">（已停止生成）</span>';
+                const stopSpan = document.createElement('span');
+                stopSpan.style.cssText = 'color:var(--text-secondary);font-size:13px;';
+                stopSpan.textContent = '（已停止生成）';
+                bubble.appendChild(document.createElement('br'));
+                bubble.appendChild(stopSpan);
             } else {
                 bubble.innerHTML = '<span style="color:var(--text-secondary)">已停止生成</span>';
             }
@@ -1507,7 +1528,9 @@ function injectDownloadButtons(container) {
 // ===== 导出文件下载（支持中文文件名） =====
 async function downloadExportFile(url) {
     try {
-        const response = await fetch(url);
+        const headers = {};
+        if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
+        const response = await fetch(url, { headers });
         if (!response.ok) {
             alert('下载失败：' + response.status + ' ' + response.statusText);
             return;
@@ -1521,7 +1544,7 @@ async function downloadExportFile(url) {
         if (disposition) {
             const utf8Match = disposition.match(/filename\*=UTF-8''(.+)/i);
             if (utf8Match) {
-                filename = decodeURIComponent(utf8Match[1]);
+                try { filename = decodeURIComponent(utf8Match[1]); } catch(e) { filename = utf8Match[1]; }
             } else {
                 const plainMatch = disposition.match(/filename="?([^"]+)"?/);
                 if (plainMatch) filename = plainMatch[1];
@@ -1531,7 +1554,7 @@ async function downloadExportFile(url) {
         if (filename === defaultNames[urlExt] || filename === '导出文档.docx') {
             const urlParts = url.split('/');
             const lastPart = urlParts[urlParts.length - 1];
-            if (lastPart) filename = decodeURIComponent(lastPart);
+            if (lastPart) { try { filename = decodeURIComponent(lastPart); } catch(e) { filename = lastPart; } }
         }
         const blob = await response.blob();
         const blobUrl = URL.createObjectURL(blob);
@@ -1798,8 +1821,11 @@ async function loadDocList() {
                 let icon = '📄';
                 if (doc.endsWith('.pdf')) icon = '📕';
                 else if (doc.endsWith('.docx')) icon = '📘';
+                else if (doc.endsWith('.xlsx') || doc.endsWith('.xls')) icon = '📊';
                 else if (doc.endsWith('.txt')) icon = '📝';
-                item.innerHTML = `<span class="doc-icon">${icon}</span><span class="doc-name">${doc}</span><button class="doc-download-btn" onclick="downloadDocument('${doc.replace(/'/g, "\\'")}')" title="下载" aria-label="下载文档">📥</button><button class="doc-delete-btn" onclick="deleteDocument('${doc.replace(/'/g, "\\'")}', this)">删除</button>`;
+                const safeName = escapeHtml(doc);
+                const safeNameForAttr = doc.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                item.innerHTML = `<span class="doc-icon">${icon}</span><span class="doc-name">${safeName}</span><button class="doc-download-btn" onclick="downloadDocument('${safeNameForAttr}')" title="下载" aria-label="下载文档">📥</button><button class="doc-delete-btn" onclick="deleteDocument('${safeNameForAttr}', this)">删除</button>`;
                 list.appendChild(item);
             });
         } else { list.innerHTML = '<div class="doc-empty">暂无文档，请上传</div>'; }
@@ -1877,7 +1903,8 @@ function formatTime(timestamp) {
 }
 
 function escapeHtml(str) {
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    if (str == null) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function handleKey(event) { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }

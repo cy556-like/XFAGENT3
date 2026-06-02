@@ -627,7 +627,7 @@ def modify_document_tool(filename: str, content: str, append: bool = False) -> s
             verify_result = get_document_content(filename, agent_id=current_aid_mod)
             if verify_result["status"] == "success":
                 # 追加模式：原文前100字必须在
-                if append and original_text[:100] not in verify_result["content"]:
+                if append and original_text and original_text[:100] not in verify_result["content"]:
                     logger.error(f"⚠️ 追加模式写入后验证失败：原文内容丢失！filename={filename}")
                     update_document(filename, original_text + "\n" + content, agent_id=current_aid_mod, async_reindex=False)
                     return f"【修改成功（已恢复）】{result['message']}（系统检测到原文可能丢失，已自动恢复）"

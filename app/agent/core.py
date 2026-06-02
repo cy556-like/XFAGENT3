@@ -572,7 +572,7 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
             yield {"type": "error", "content": "主API Key已失效，已自动切换到备用Key，请重新提问"}
             return
         try:
-            result = agent.invoke({"messages": all_messages, "retry_count": 0})
+            result = await agent.ainvoke({"messages": all_messages, "retry_count": 0})
             ai_message = result["messages"][-1]
             full_response = ai_message.content or ""
             if full_response:
@@ -586,7 +586,7 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
     # 流式输出为空时回退到非流式
     if not full_response:
         try:
-            result = agent.invoke({"messages": all_messages, "retry_count": 0})
+            result = await agent.ainvoke({"messages": all_messages, "retry_count": 0})
             ai_message = result["messages"][-1]
             full_response = ai_message.content or ""
             if full_response:

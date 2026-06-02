@@ -44,8 +44,8 @@ def _hash_password(password: str) -> str:
         import bcrypt
         return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     except ImportError:
-        # fallback: 如果 bcrypt 未安装，使用 SHA256（不推荐）
-        return hashlib.sha256(password.encode()).hexdigest()
+        # fallback: 如果 bcrypt 未安装，使用 SHA256 + 固定盐（不推荐，但比无盐好）
+        return hashlib.sha256(f"xfagent-salt-{password}".encode()).hexdigest()
 
 
 def _verify_password(password: str, password_hash: str) -> bool:
@@ -55,8 +55,8 @@ def _verify_password(password: str, password_hash: str) -> bool:
         # 尝试 bcrypt 验证
         return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
     except (ImportError, ValueError):
-        # fallback: SHA256 验证（兼容旧密码）
-        return password_hash == hashlib.sha256(password.encode()).hexdigest()
+        # fallback: SHA256 验证（兼容旧密码，需同时检查带盐和不带盐的格式）
+        return password_hash == hashlib.sha256(f"xfagent-salt-{password}".encode()).hexdigest() or password_hash == hashlib.sha256(password.encode()).hexdigest()
 
 
 def register_user(username: str, password: str) -> dict:

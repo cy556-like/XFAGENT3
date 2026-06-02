@@ -81,8 +81,9 @@ def _record_request(path: str, duration: float, is_error: bool = False):
 # ===== JWT 认证依赖 =====
 def get_current_user(request: Request) -> str:
     """
-    从请求中提取当前用户名（JWT Token 或兼容旧方式）
+    从请求中提取当前用户名（JWT Token 验证）
     不强制认证，但如果有 Token 则验证
+    注意：已移除查询参数回退，防止认证绕过
     """
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
@@ -90,9 +91,7 @@ def get_current_user(request: Request) -> str:
         username = get_username_from_token(token)
         if username:
             return username
-    # 兼容：从查询参数获取
-    username = request.query_params.get("username", "")
-    return username
+    return ""
 
 
 def require_auth(request: Request) -> str:
@@ -667,11 +666,15 @@ async def download_document(filename: str, agent_id: str = Query(None, descripti
     with open(file_path, "rb") as f:
         content = f.read()
 
+    # RFC 5987: 中文文件名需要URL编码
+    from urllib.parse import quote
+    encoded_filename = quote(filename)
+
     return Response(
         content=content,
         media_type=media_type,
         headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{filename}"
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
         }
     )
 
