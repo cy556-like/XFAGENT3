@@ -17,8 +17,15 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 需要同步的文件列表（相对于项目根目录）
 SYNC_FILES = [
-    "rebuild_index.py",
-    "app/rag/document.py",
+    # ===== 核心应用文件 =====
+    "app/agent/tools.py",       # 搜索效率优化：计数器+top5+缓存TTL
+    "app/agent/core.py",        # MAX_TOOL_ROUNDS 8→5 + 搜索计数重置
+    "app/agent/prompts.py",     # 搜索效率规则（提示词层）
+    "app/rag/document.py",      # DOCX表格加载 + BM25检索
+    "app/docx_export.py",       # DOCX导出列宽优化（如果存在）
+    "app/api/routes.py",        # 路由修复（如果存在）
+    "rebuild_index.py",         # 重建索引脚本
+    "requirements.txt",         # 依赖文件
 ]
 
 
@@ -44,6 +51,12 @@ def download_file_github_api(filepath, token, repo, branch):
         else:
             print("FAILED (unexpected format)")
             return None
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            print(f"SKIP (文件不存在于仓库)")
+        else:
+            print(f"FAILED (HTTP {e.code})")
+        return None
     except Exception as e:
         print(f"FAILED ({e})")
         return None
@@ -78,18 +91,26 @@ def main():
     
     success = 0
     failed = 0
+    skipped = 0
     
     for filepath in SYNC_FILES:
         # 先试 GitHub API，失败再试 raw
         content = download_file_github_api(filepath, TOKEN, REPO, BRANCH)
         
         if content is None:
+            # 404 的不需要再试 raw
             print("  尝试 raw 方式...")
             content = download_file_raw(TOKEN, REPO, BRANCH, filepath)
         
         if content is None:
-            failed += 1
-            print(f"  ✗ {filepath} 下载失败，跳过")
+            # 检查文件是否存在本地（可能是不需要的文件）
+            target_path = os.path.join(PROJECT_DIR, filepath)
+            if not os.path.exists(target_path):
+                skipped += 1
+                print(f"  ⊘ {filepath} 本地和远程均不存在，跳过")
+            else:
+                failed += 1
+                print(f"  ✗ {filepath} 下载失败，保留本地版本")
             continue
         
         # 写入文件
@@ -107,9 +128,15 @@ def main():
             try:
                 with open(target_path, "rb") as f:
                     old_content = f.read()
-                with open(backup_path, "wb") as f:
-                    f.write(old_content)
-                print(f"  备份: {filepath} -> {filepath}.bak")
+                # 只有内容不同才备份
+                if old_content != content:
+                    with open(backup_path, "wb") as f:
+                        f.write(old_content)
+                    print(f"  备份: {filepath} -> {filepath}.bak")
+                else:
+                    print(f"  (内容未变化，跳过写入)")
+                    skipped += 1
+                    continue
             except Exception as e:
                 print(f"  备份失败: {e}")
         
@@ -119,6 +146,19 @@ def main():
                 f.write(content)
             print(f"  ✓ {filepath} 已更新")
             success += 1
+        except PermissionError:
+            print(f"  ✗ 写入失败: 权限不足，请用 sudo 运行")
+            failed += 1
+            # 恢复备份
+            if os.path.exists(target_path + ".bak"):
+                try:
+                    with open(target_path + ".bak", "rb") as bf:
+                        old = bf.read()
+                    with open(target_path, "wb") as f:
+                        f.write(old)
+                    print(f"  已恢复备份")
+                except Exception:
+                    pass
         except Exception as e:
             print(f"  ✗ 写入失败: {e}")
             failed += 1
@@ -135,13 +175,16 @@ def main():
     
     print()
     print("=" * 60)
-    print(f"同步完成: {success} 成功, {failed} 失败")
+    print(f"同步完成: {success} 更新, {failed} 失败, {skipped} 跳过")
     
-    if failed == 0:
+    if failed == 0 and success > 0:
         print("\n下一步操作:")
-        print("  1. pip install python-docx    # 安装表格功能依赖")
-        print("  2. python rebuild_index.py    # 重建索引（会自动跳过孤立目录）")
-        print("  3. 重启服务")
+        print("  1. pip install rank_bm25 jieba python-docx  # 安装依赖（如未安装）")
+        print("  2. python rebuild_index.py                  # 重建索引（可选）")
+        print("  3. 重启服务:")
+        print("     - Docker: docker restart <容器名>")
+        print("     - K8s:    kubectl rollout restart deployment/<部署名>")
+        print("     - 直接运行: 先 Ctrl+C 停止，再 python -m app.main")
     
     return 0 if failed == 0 else 1
 
