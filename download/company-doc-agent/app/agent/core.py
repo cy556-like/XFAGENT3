@@ -4,12 +4,14 @@ Agent 核心逻辑模块
 ReAct = Reasoning(推理) + Acting(行动) → 边思考边行动
 
 优化策略：
-1. LLM 超时保护 — 防止 httpx.ReadTimeout
+1. LLM 超时保护 — 防止 httpx.ReadTimeout（设置 timeout + streaming_timeout）
 2. 流式输出 — 用户实时看到回复，感知更快
 3. 智能历史裁剪 — 去掉过长的 ToolMessage，保留对话主线
 4. 搜索次数限制 — 每轮最多搜索 N 次，防止冗余搜索
+5. 超时重试 — think 节点自带重试，防止单次超时导致整体失败
 """
 import asyncio
+import logging
 from typing import Annotated, AsyncGenerator
 from typing_extensions import TypedDict
 
@@ -24,6 +26,8 @@ from app.agent.tools import ALL_TOOLS
 from app.agent.prompts import SYSTEM_PROMPT
 from app.memory.manager import get_session_history
 
+logger = logging.getLogger(__name__)
+
 # 最大历史消息数量（加速推理，避免上下文过长）
 MAX_HISTORY_MESSAGES = 8
 
@@ -32,6 +36,9 @@ MAX_TOOL_ROUNDS = 5
 
 # 每轮最大搜索次数（防止冗余搜索）
 MAX_SEARCH_PER_ROUND = 3
+
+# think 节点超时重试次数
+THINK_RETRY_COUNT = 2
 
 
 # ===== 1. 定义 Agent 状态 =====
@@ -47,14 +54,22 @@ class AgentState(TypedDict):
 
 # ===== 2. 创建 LLM =====
 def create_llm():
-    """创建 LLM 实例（带超时保护）"""
+    """
+    创建 LLM 实例（带完整超时保护）
+
+    关键：ChatOpenAI 的 timeout 参数直接传给底层 httpx，
+    必须同时设置 read timeout，否则流式响应时会超时。
+    """
+    timeout_seconds = getattr(settings, 'LLM_TIMEOUT', 120)
+
     return ChatOpenAI(
         api_key=settings.LLM_API_KEY,
         base_url=settings.LLM_BASE_URL,
         model=settings.LLM_MODEL,
         temperature=0.1,
-        request_timeout=settings.LLM_TIMEOUT,  # 关键：防止 ReadTimeout
-        max_retries=2,  # 超时自动重试2次
+        timeout=timeout_seconds,           # 总超时（秒）
+        max_retries=1,                     # 超时自动重试1次（不要太多，避免用户等太久）
+        streaming=True,                    # 流式输出，减少首 token 等待感知
     )
 
 
@@ -103,14 +118,36 @@ def create_agent_graph():
     # 搜索计数器（每轮对话重置）
     search_counter = {"count": 0}
 
-    # 节点1: LLM 思考节点
+    # 节点1: LLM 思考节点（带超时重试）
     def think(state: AgentState):
-        """LLM 思考：分析用户问题，决定是否调用工具"""
+        """LLM 思考：分析用户问题，决定是否调用工具（含超时重试）"""
         messages = state["messages"]
-        # 在开头插入系统提示词
         system_msg = SystemMessage(content=SYSTEM_PROMPT)
-        response = llm_with_tools.invoke([system_msg] + messages)
-        return {"messages": [response], "search_count": state.get("search_count", 0)}
+
+        last_error = None
+        for attempt in range(THINK_RETRY_COUNT + 1):
+            try:
+                response = llm_with_tools.invoke([system_msg] + messages)
+                return {"messages": [response], "search_count": state.get("search_count", 0)}
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                if "ReadTimeout" in error_msg or "timed out" in error_msg:
+                    if attempt < THINK_RETRY_COUNT:
+                        logger.warning(f"think 节点超时，第 {attempt + 1} 次重试...")
+                        continue
+                    else:
+                        logger.error(f"think 节点超时，已重试 {THINK_RETRY_COUNT} 次，强制返回超时提示")
+                        # 返回一个超时提示的 AI 消息，而不是让整个 Agent 崩溃
+                        timeout_msg = AIMessage(content="⚠️ 抱歉，LLM 响应超时，请稍后重试或简化您的问题。")
+                        return {"messages": [timeout_msg], "search_count": state.get("search_count", 0)}
+                else:
+                    # 非超时错误，不重试，直接抛出
+                    raise
+
+        # 不应该走到这里，但以防万一
+        timeout_msg = AIMessage(content="⚠️ 抱歉，LLM 响应超时，请稍后重试。")
+        return {"messages": [timeout_msg], "search_count": state.get("search_count", 0)}
 
     # 节点2: 工具执行节点（使用 LangGraph 内置的 ToolNode）
     tool_node = ToolNode(ALL_TOOLS)
@@ -142,7 +179,6 @@ def create_agent_graph():
             for tool_call in last_message.tool_calls:
                 if tool_call.get("name") == "search_documents_tool":
                     if search_count >= MAX_SEARCH_PER_ROUND:
-                        # 搜索次数已满，不再允许搜索
                         return END
             return "act"
 
@@ -151,9 +187,7 @@ def create_agent_graph():
     # 工具执行后更新搜索计数
     def act_with_counter(state: AgentState):
         """执行工具并更新搜索计数"""
-        # 先执行工具
         result = tool_node.invoke(state)
-        # 检查是否有搜索工具被调用
         messages = state["messages"]
         last_message = messages[-1]
         search_count = state.get("search_count", 0)
@@ -167,24 +201,20 @@ def create_agent_graph():
     # ===== 构建状态图 =====
     graph = StateGraph(AgentState)
 
-    # 添加节点
-    graph.add_node("think", think)       # 思考节点
-    graph.add_node("act", act_with_counter)  # 行动节点（带搜索计数）
+    graph.add_node("think", think)
+    graph.add_node("act", act_with_counter)
 
-    # 设置入口
     graph.set_entry_point("think")
 
-    # 添加条件边：思考后判断是否需要调用工具
     graph.add_conditional_edges(
         "think",
         should_continue,
         {
-            "act": "act",   # 需要工具 → 去执行
-            END: END,       # 不需要工具 → 结束
+            "act": "act",
+            END: END,
         },
     )
 
-    # 执行完工具后，回到思考节点（形成 ReAct 循环）
     graph.add_edge("act", "think")
 
     return graph.compile()
@@ -205,30 +235,21 @@ def get_agent():
 def chat(user_input: str, session_id: str = "default") -> str:
     """
     与 Agent 对话的核心方法（同步版本，供 REST API 使用）
-
-    Args:
-        user_input: 用户输入
-        session_id: 会话 ID（支持多用户）
-
-    Returns:
-        str: Agent 的回答
     """
     agent = get_agent()
-
-    # 获取该会话的历史消息
     history = get_session_history(session_id)
-
-    # 智能裁剪历史消息（加速推理）
     recent_messages = trim_history(history.messages, MAX_HISTORY_MESSAGES)
-
-    # 构建完整的消息列表 = 历史消息 + 新消息
     all_messages = recent_messages + [HumanMessage(content=user_input)]
 
-    # 调用 Agent
-    result = agent.invoke({"messages": all_messages, "search_count": 0})
-
-    # 提取最后的 AI 回答
-    ai_message = result["messages"][-1]
+    try:
+        result = agent.invoke({"messages": all_messages, "search_count": 0})
+        ai_message = result["messages"][-1]
+    except Exception as e:
+        error_msg = str(e)
+        if "ReadTimeout" in error_msg or "timed out" in error_msg:
+            ai_message = AIMessage(content="⚠️ LLM 响应超时，请稍后重试或简化您的问题。")
+        else:
+            ai_message = AIMessage(content=f"⚠️ 处理出错: {error_msg}")
 
     # 保存到会话历史
     history.add_message(HumanMessage(content=user_input))
@@ -241,31 +262,13 @@ def chat(user_input: str, session_id: str = "default") -> str:
 async def chat_stream(user_input: str, session_id: str = "default") -> AsyncGenerator[str, None]:
     """
     与 Agent 对话的流式输出方法（供 SSE 使用）
-
-    实时输出 Agent 的思考过程和最终回答，
-    用户不需要等到全部完成才能看到回复
-
-    Args:
-        user_input: 用户输入
-        session_id: 会话 ID
-
-    Yields:
-        str: 流式输出的文本片段
     """
     agent = get_agent()
-
-    # 获取该会话的历史消息
     history = get_session_history(session_id)
-
-    # 智能裁剪历史消息
     recent_messages = trim_history(history.messages, MAX_HISTORY_MESSAGES)
-
-    # 构建完整的消息列表
     all_messages = recent_messages + [HumanMessage(content=user_input)]
 
-    # 用于收集最终的 AI 回答
     full_response = ""
-    tool_rounds = 0
     search_count = 0
 
     try:
@@ -284,7 +287,6 @@ async def chat_stream(user_input: str, session_id: str = "default") -> AsyncGene
                         full_response += content
                         yield content
                     elif isinstance(content, list):
-                        # 处理 content 是列表的情况
                         for item in content:
                             if isinstance(item, dict) and "text" in item:
                                 full_response += item["text"]
@@ -307,13 +309,19 @@ async def chat_stream(user_input: str, session_id: str = "default") -> AsyncGene
                     yield "✅ 搜索完成\n"
 
     except asyncio.TimeoutError:
-        yield "\n\n⚠️ 响应超时，请稍后重试。"
+        if not full_response:
+            full_response = "⚠️ 响应超时，请稍后重试。"
+            yield full_response
     except Exception as e:
         error_msg = str(e)
         if "ReadTimeout" in error_msg or "timed out" in error_msg:
-            yield "\n\n⚠️ LLM 响应超时，请稍后重试。"
+            if not full_response:
+                full_response = "⚠️ LLM 响应超时，请稍后重试或简化您的问题。"
+                yield full_response
         else:
-            yield f"\n\n⚠️ 处理出错: {error_msg}"
+            if not full_response:
+                full_response = f"⚠️ 处理出错: {error_msg}"
+                yield full_response
 
     # 保存到会话历史
     if full_response:
