@@ -15,6 +15,7 @@ class Settings:
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
     LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "glm-4-flash")
+    LLM_TIMEOUT: int = int(os.getenv("LLM_TIMEOUT", "120"))  # LLM 请求超时(秒)，默认120秒
 
     # Embedding 模型配置（智谱: embedding-3, OpenAI: text-embedding-v3）
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "embedding-3")

@@ -1,16 +1,23 @@
 """
 FastAPI 路由定义
 提供 REST API 接口供前端和外部调用
+
+优化：
+1. 新增 SSE 流式对话接口 /chat/stream — 实时输出，用户感知更快
+2. 所有 LLM 调用加上 request_timeout 保护
+3. /modify-document 接口也加上超时保护
 """
 import os
 import shutil
+import json
 import tempfile
 from typing import Optional
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.agent.core import chat
+from app.agent.core import chat, chat_stream
 from app.rag.document import index_document, search_documents, list_indexed_documents, read_document_content
 from app.memory.manager import (
     get_history_messages, clear_session_history,
@@ -105,7 +112,7 @@ async def rename_user_chat(chat_id: str, req: RenameChatRequest):
 @router.post("/chat", response_model=ChatResponse, summary="与 Agent 对话")
 async def chat_api(req: ChatRequest):
     """
-    核心接口：与文档助手 Agent 对话
+    核心接口：与文档助手 Agent 对话（同步版本）
 
     - 支持 RAG 文档问答
     - 支持员工信息查询
@@ -113,8 +120,7 @@ async def chat_api(req: ChatRequest):
     """
     try:
         response = chat(req.message, req.session_id)
-        # 更新会话时间（从 session_id 中提取 username）
-        # session_id 格式: username_xxxxx
+        # 更新会话时间
         parts = req.session_id.rsplit("_", 1)
         if len(parts) == 2:
             username = parts[0]
@@ -124,7 +130,57 @@ async def chat_api(req: ChatRequest):
                 pass
         return ChatResponse(response=response, session_id=req.session_id)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Agent 处理失败: {str(e)}")
+        error_msg = str(e)
+        if "ReadTimeout" in error_msg or "timed out" in error_msg:
+            raise HTTPException(status_code=504, detail="LLM 响应超时，请稍后重试")
+        raise HTTPException(status_code=500, detail=f"Agent 处理失败: {error_msg}")
+
+
+@router.post("/chat/stream", summary="与 Agent 流式对话")
+async def chat_stream_api(req: ChatRequest):
+    """
+    流式对话接口（SSE - Server-Sent Events）
+
+    实时输出 Agent 的回复，用户无需等待全部完成。
+    返回格式：text/event-stream，每行 data: 后跟 JSON 片段。
+
+    前端使用示例：
+    const evtSource = new EventSource('/api/v1/chat/stream', {{
+        method: 'POST',
+        body: JSON.stringify({{ message: '你好', session_id: 'test' }})
+    }});
+    // 或用 fetch + ReadableStream
+    """
+    async def event_generator():
+        try:
+            async for chunk in chat_stream(req.message, req.session_id):
+                # SSE 格式：data: {json}\n\n
+                data = json.dumps({"content": chunk}, ensure_ascii=False)
+                yield f"data: {data}\n\n"
+            # 结束标记
+            yield f"data: {json.dumps({'done': True}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
+            yield f"data: {error_data}\n\n"
+
+        # 更新会话时间
+        parts = req.session_id.rsplit("_", 1)
+        if len(parts) == 2:
+            username = parts[0]
+            try:
+                update_chat_time(username, req.session_id)
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # 禁止 nginx 缓冲
+        },
+    )
 
 
 @router.post("/chat-with-file", summary="带文件的对话")
@@ -172,7 +228,7 @@ async def chat_with_file(
         if len(file_content) > max_content_chars:
             file_content = file_content[:max_content_chars] + f"\n\n...（文件内容过长，已截断，共 {len(file_content)} 字符）"
 
-        # 5. 构建增强消息：文件内容 + 用户问题 + 文件路径信息
+        # 5. 构建增强消息
         enhanced_message = f"""[用户上传了文件: {file.filename}]
 
 文件内容如下：
@@ -199,7 +255,10 @@ async def chat_with_file(
         return {"response": response, "session_id": session_id}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"处理失败: {str(e)}")
+        error_msg = str(e)
+        if "ReadTimeout" in error_msg or "timed out" in error_msg:
+            raise HTTPException(status_code=504, detail="LLM 响应超时，请稍后重试")
+        raise HTTPException(status_code=500, detail=f"处理失败: {error_msg}")
 
 
 # ===== 文档管理接口 =====
@@ -265,10 +324,9 @@ async def modify_document(
 
     try:
         # 读取文档内容
-        from app.rag.document import read_document_content
         content = read_document_content(temp_path)
 
-        # 调用 LLM 修改文档
+        # 调用 LLM 修改文档（带超时保护）
         from langchain_openai import ChatOpenAI
         from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -277,26 +335,21 @@ async def modify_document(
             base_url=settings.LLM_BASE_URL,
             model=settings.LLM_MODEL,
             temperature=0.3,
+            request_timeout=settings.LLM_TIMEOUT,  # 超时保护
+            max_retries=2,
         )
 
-        system_prompt = f"""你是一个文档修改助手。用户会给你一份文档的原始内容和修改要求，你需要按照修改要求对文档进行修改，然后返回修改后的完整文档内容。
-
-规则：
-1. 只返回修改后的文档内容，不要添加任何解释说明
-2. 保持原文档的格式和结构
-3. 只修改用户要求的部分，其余内容保持不变
-4. 如果是表格数据，保持表格格式
-5. 用中文输出"""
+        system_prompt = """你是文档修改助手。按修改要求修改文档，只返回修改后的完整内容，不添加解释。保持原格式和结构，表格数据保持表格格式。用中文输出。"""
 
         messages = [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"原始文档内容：\n\n{content}\n\n修改要求：{instruction}"),
+            HumanMessage(content=f"原始文档：\n\n{content}\n\n修改要求：{instruction}"),
         ]
 
         response = llm.invoke(messages)
         modified_content = response.content
 
-        # 保存修改后的文件（保存到 static/modified 目录，可通过 /static/modified/ 下载）
+        # 保存修改后的文件
         static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
         modified_dir = os.path.join(static_dir, "modified")
         os.makedirs(modified_dir, exist_ok=True)
@@ -305,36 +358,27 @@ async def modify_document(
         output_path = os.path.join(modified_dir, output_filename)
 
         if ext == ".docx":
-            # 使用 python-docx 保存 docx 格式
             try:
                 from docx import Document
                 doc = Document(temp_path)
-                # 清空所有段落
                 for paragraph in doc.paragraphs:
                     paragraph.text = ""
-                # 写入修改后的内容
                 paragraphs = modified_content.split("\n")
-                # 第一个段落使用已有的第一个段落
                 if doc.paragraphs:
                     doc.paragraphs[0].text = paragraphs[0] if paragraphs else ""
-                # 剩余段落添加
                 for p_text in paragraphs[1:]:
                     doc.add_paragraph(p_text)
                 doc.save(output_path)
             except ImportError:
-                # 如果没有 python-docx，就保存为 txt
                 output_filename = f"modified_{os.path.splitext(file.filename)[0]}.txt"
                 output_path = os.path.join(modified_dir, output_filename)
                 with open(output_path, "w", encoding="utf-8") as f:
                     f.write(modified_content)
         elif ext == ".pdf":
-            # 使用 fpdf2 生成真正的 PDF 文件（支持中文）
             from app.utils.pdf_generator import generate_pdf
             success, actual_path = generate_pdf(modified_content, output_path, title=f"修改后的 {file.filename}")
-            # 更新实际输出文件名（可能回退为 .txt）
             output_filename = os.path.basename(actual_path)
         else:
-            # .txt 等其他格式直接保存文本
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(modified_content)
 
@@ -345,7 +389,7 @@ async def modify_document(
 
         return {
             "success": True,
-            "message": f"文档修改完成！已按您的修改要求处理。",
+            "message": "文档修改完成！已按您的修改要求处理。",
             "download_url": download_url,
             "filename": output_filename,
         }
@@ -354,7 +398,10 @@ async def modify_document(
         # 清理临时文件
         if os.path.exists(temp_path):
             os.remove(temp_path)
-        raise HTTPException(status_code=500, detail=f"文档修改失败: {str(e)}")
+        error_msg = str(e)
+        if "ReadTimeout" in error_msg or "timed out" in error_msg:
+            raise HTTPException(status_code=504, detail="LLM 响应超时，请稍后重试")
+        raise HTTPException(status_code=500, detail=f"文档修改失败: {error_msg}")
 
 
 @router.post("/search", summary="搜索文档内容")

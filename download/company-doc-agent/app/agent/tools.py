@@ -2,9 +2,16 @@
 Agent 工具定义模块
 每个工具 = Agent 的一个「能力」
 Agent 会根据用户问题自动选择调用哪个工具
+
+优化策略：
+1. 搜索缓存 — 相同查询 60s 内直接返回缓存结果
+2. 结果截断 — 限制单条内容长度，防止上下文膨胀
+3. top_k 调优 — 从 3 提升到 5，减少重复搜索
+4. LLM 超时 — modify_document 工具也加上超时保护
 """
 import json
 import os
+import time
 from typing import Optional
 
 from langchain_core.tools import tool
@@ -13,30 +20,66 @@ from app.config import settings
 from app.rag.document import search_documents, index_document, list_indexed_documents
 
 
+# ===== 搜索结果缓存 =====
+_search_cache: dict[str, tuple[str, float]] = {}
+_CACHE_TTL = 60  # 缓存有效期 60 秒
+
+# 搜索结果单条内容最大长度（超过截断，防止上下文膨胀）
+MAX_CONTENT_LENGTH = 800
+
+
+def _get_cached(key: str) -> Optional[str]:
+    """获取缓存"""
+    if key in _search_cache:
+        result, timestamp = _search_cache[key]
+        if time.time() - timestamp < _CACHE_TTL:
+            return result
+        del _search_cache[key]
+    return None
+
+
+def _set_cached(key: str, value: str):
+    """设置缓存"""
+    _search_cache[key] = (value, time.time())
+    # 清理过期缓存（简单策略：超过 20 条时清理最旧的）
+    if len(_search_cache) > 20:
+        oldest_key = min(_search_cache, key=lambda k: _search_cache[k][1])
+        del _search_cache[oldest_key]
+
+
 @tool
 def search_documents_tool(query: str) -> str:
-    """在公司文档库中搜索与查询相关的文档内容。当用户问关于公司制度、流程、规范等问题时使用。
+    """搜索公司文档。问制度、流程、规范时用。
 
     Args:
         query: 搜索查询内容
     """
-    results = search_documents(query, top_k=3)
+    # 检查缓存
+    cached = _get_cached(query)
+    if cached:
+        return cached
+
+    results = search_documents(query, top_k=5)
 
     if not results:
         return "未找到相关文档内容。"
 
     output = "检索到以下相关内容：\n\n"
     for i, r in enumerate(results, 1):
-        output += f"【文档 {i}】来源: {r['source']}\n"
-        output += f"{r['content']}\n"
-        output += f"(相似度: {r['relevance_score']})\n\n"
+        content = r['content']
+        # 截断过长内容，减少上下文 token
+        if len(content) > MAX_CONTENT_LENGTH:
+            content = content[:MAX_CONTENT_LENGTH] + "...[内容过长已截断]"
+        output += f"【文档{i}】来源: {r['source']}\n{content}\n\n"
 
+    # 缓存结果
+    _set_cached(query, output)
     return output
 
 
 @tool
 def lookup_employee_tool(name: str = "", department: str = "") -> str:
-    """查询公司员工信息，包括姓名、部门、职位、邮箱等。当用户问「某某在哪个部门」、「某部门有哪些人」等问题时使用。
+    """查员工信息。问部门、职位、联系方式时用。
 
     Args:
         name: 员工姓名（可选，模糊匹配）
@@ -74,7 +117,7 @@ def lookup_employee_tool(name: str = "", department: str = "") -> str:
 
 @tool
 def list_documents_tool() -> str:
-    """列出知识库中所有可用的文档。当用户想了解有哪些文档时使用。"""
+    """列出知识库文档。"""
     docs = list_indexed_documents()
 
     if not docs:
@@ -89,7 +132,7 @@ def list_documents_tool() -> str:
 
 @tool
 def upload_document_tool(file_path: str) -> str:
-    """上传新文档到知识库。当用户需要添加新文档时使用。
+    """上传新文档到知识库。
 
     Args:
         file_path: 文档文件路径
@@ -106,7 +149,7 @@ def upload_document_tool(file_path: str) -> str:
 
 @tool
 def modify_document_tool(file_path: str, instruction: str) -> str:
-    """修改已有文档的内容。当用户需要修改、编辑、更新文档时使用。
+    """修改文档内容。用户明确要求修改/返回文件时用。
 
     Args:
         file_path: 要修改的文档路径
@@ -123,31 +166,27 @@ def modify_document_tool(file_path: str, instruction: str) -> str:
         # 读取文档内容
         content = read_document_content(file_path)
 
-        # 调用 LLM 修改文档
+        # 调用 LLM 修改文档（带超时保护）
         llm = ChatOpenAI(
             api_key=settings.LLM_API_KEY,
             base_url=settings.LLM_BASE_URL,
             model=settings.LLM_MODEL,
             temperature=0.3,
+            request_timeout=settings.LLM_TIMEOUT,  # 超时保护
+            max_retries=2,
         )
 
-        system_prompt = """你是一个文档修改助手。用户会给你一份文档的原始内容和修改要求，你需要按照修改要求对文档进行修改，然后返回修改后的完整文档内容。
-
-规则：
-1. 只返回修改后的文档内容，不要添加任何解释说明
-2. 保持原文档的格式和结构
-3. 只修改用户要求的部分，其余内容保持不变
-4. 用中文输出"""
+        system_prompt = """你是文档修改助手。按修改要求修改文档，只返回修改后的完整内容，不添加解释。保持原格式和结构。用中文输出。"""
 
         messages = [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"原始文档内容：\n\n{content}\n\n修改要求：{instruction}"),
+            HumanMessage(content=f"原始文档：\n\n{content}\n\n修改要求：{instruction}"),
         ]
 
         response = llm.invoke(messages)
         modified_content = response.content
 
-        # 保存修改后的文件（保存到 static/modified 目录，可通过 /static/modified/ 下载）
+        # 保存修改后的文件
         ext = os.path.splitext(file_path)[1].lower()
         static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
         modified_dir = os.path.join(static_dir, "modified")
@@ -172,7 +211,6 @@ def modify_document_tool(file_path: str, instruction: str) -> str:
                 with open(output_path, "w", encoding="utf-8") as f:
                     f.write(modified_content)
         elif ext == ".pdf":
-            # 使用 fpdf2 生成真正的 PDF 文件（支持中文）
             from app.utils.pdf_generator import generate_pdf
             success, actual_path = generate_pdf(modified_content, output_path, title=f"修改后的 {os.path.basename(file_path)}")
             output_filename = os.path.basename(actual_path)
@@ -180,10 +218,13 @@ def modify_document_tool(file_path: str, instruction: str) -> str:
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(modified_content)
 
-        return f"文档修改完成！修改后的文件已保存，下载链接: /static/modified/{output_filename}"
+        return f"文档修改完成！下载链接: /static/modified/{output_filename}"
 
     except Exception as e:
-        return f"文档修改失败: {str(e)}"
+        error_msg = str(e)
+        if "ReadTimeout" in error_msg or "timed out" in error_msg:
+            return "文档修改超时，请稍后重试或缩短文档内容。"
+        return f"文档修改失败: {error_msg}"
 
 
 # ===== 导出所有工具列表 =====
