@@ -182,14 +182,10 @@ def cached_tool(ttl: int = 300, include_agent_id: bool = True):
 @tool
 @cached_tool(ttl=300, include_agent_id=False)  # [#8] web_search 缓存 5 分钟（与智能体无关）
 def web_search_tool(query: str) -> str:
-    """搜索互联网获取实时信息。当你需要最新资讯、实时数据、或知识库中没有的信息时使用此工具。
-
-    【用途】搜索互联网上的最新信息、新闻、实时数据等。
-    【典型问题】「最新新闻」「今天天气」「某产品最新价格」「最新技术动态」「实时汇率」
-    【不适用】查公司制度文档（用search_documents_tool）、查员工信息（用lookup_employee_tool）。
+    """搜索互联网获取实时信息（最新资讯、实时数据等）。
 
     Args:
-        query: 搜索查询关键词。示例：「2024年最新AI技术动态」「北京今天天气」
+        query: 搜索关键词，如「最新AI技术动态」「北京今天天气」
     """
     try:
         import httpx
@@ -277,17 +273,10 @@ def _load_employees():
 @tool
 @cached_tool(ttl=300)  # [#8] 文档搜索缓存 5 分钟（与web_search一致，减少同会话重复搜索）
 def search_documents_tool(query: str) -> str:
-    """搜索公司文档知识库，检索与查询语义相关的文档片段。
-
-    [#9] 采用混合检索策略：向量语义检索 + 关键词匹配，提升检索准确率
-    [#10] 返回结果标注文档来源和段落位置，支持引用溯源
-
-    【用途】查询公司制度、流程、规范、政策、规定等文档内容。
-    【不适用】查员工信息（用lookup_employee_tool）、查看文档列表（用list_documents_tool）。
+    """搜索公司文档知识库，查询制度、流程、规范等。
 
     Args:
-        query: 搜索查询关键词。
-               示例：「年假制度」「报销流程」「考勤规定」
+        query: 搜索关键词，如「年假制度」「报销流程」
     """
     # [#9] 混合检索：先向量搜索，再用关键词补充
     # 按 agent_id 隔离知识库：智能体只搜索自己的知识库
@@ -359,15 +348,11 @@ def search_documents_tool(query: str) -> str:
 
 @tool
 def lookup_employee_tool(name: str = "", department: str = "") -> str:
-    """查询公司员工信息。不传参数则列出全部员工，传参数则按条件筛选。
-
-    【用途】查询员工姓名、部门、职位、联系方式等人员信息。
-    【典型问题】「所有员工」「张三的信息」「技术部有哪些人」「公司有哪些部门的人」
-    【不适用】查公司制度文档（用search_documents_tool）、查文档列表（用list_documents_tool）。
+    """查询员工信息。不传参列出全部，传参按条件筛选。
 
     Args:
-        name: 员工姓名（可选，支持模糊匹配）。示例：「张」可匹配「张三」「张伟」
-        department: 部门名称（可选，支持模糊匹配）。示例：「技术」可匹配「技术部」
+        name: 员工姓名（可选，模糊匹配）
+        department: 部门名称（可选，模糊匹配）
     """
     employees = _load_employees()
 
@@ -414,11 +399,7 @@ def lookup_employee_tool(name: str = "", department: str = "") -> str:
 
 @tool
 def list_departments_tool() -> str:
-    """列出公司所有部门及各部门人数。
-
-    【用途】当用户想知道公司有哪些部门、各部门有多少人时使用。
-    【典型问题】「公司有哪些部门」「部门列表」「都有什么部门」。
-    """
+    """列出公司所有部门及各部门人数。"""
     employees = _load_employees()
 
     if employees is None:
@@ -446,12 +427,7 @@ def list_departments_tool() -> str:
 
 @tool
 def list_documents_tool() -> str:
-    """列出知识库中所有已索引的文档。
-
-    【用途】查看知识库中有哪些可搜索的文档。
-    【典型问题】「知识库有哪些文档」「文档列表」「你们有什么资料」。
-    【不适用】查员工信息（用lookup_employee_tool）、查公司制度内容（用search_documents_tool）。
-    """
+    """列出知识库中所有已索引的文档。"""
     current_aid = get_current_agent_id()
     logger.debug(f"文档列表: agent_id={current_aid}")
 
@@ -475,13 +451,10 @@ def list_documents_tool() -> str:
 
 @tool
 def upload_document_tool(file_path: str) -> str:
-    """将新文档上传并索引到知识库，使其可被搜索。
-
-    【用途】当用户需要添加新文档到知识库时使用。
-    支持格式：PDF、TXT、DOCX。
+    """上传新文档到知识库。支持PDF/TXT/DOCX/XLSX。
 
     Args:
-        file_path: 要上传的文档文件路径，必须是已存在于服务器上的文件。
+        file_path: 服务器上的文件路径
     """
     if not os.path.exists(file_path):
         return f"【上传失败】文件不存在：{file_path}\n请确认文件路径是否正确，或先通过界面功能上传文件。"
@@ -504,18 +477,10 @@ def upload_document_tool(file_path: str) -> str:
 
 @tool
 def get_document_content_tool(filename: str) -> str:
-    """获取知识库中指定文档的完整内容。直接从原始文件读取，不依赖向量搜索，不会消耗embedding额度。
-
-    【用途】当需要查看或获取某个文档的完整内容时使用。修改文档前应先用此工具获取完整内容。
-    【典型问题】「显示xxx文档的完整内容」「获取xxx文档全文」「查看xxx文档」
-    【与search_documents_tool的区别】
-    - search_documents_tool：搜索知识库，返回与查询相关的文档片段（500字/片），适合查找特定信息
-    - get_document_content_tool：返回指定文档的完整全文，适合需要整体查看或修改文档的场景
-    【重要】修改文档前，请先调用此工具获取完整内容，修改后再调用modify_document_tool保存。
+    """获取文档完整内容。修改文档前必须先调此工具读取原文。
 
     Args:
-        filename: 文档文件名（含扩展名），需与知识库中的文件名完全一致。
-                  示例：「员工手册.pdf」「FMEA新版手册.docx」
+        filename: 文档文件名（含扩展名），如「员工手册.pdf」
     """
     current_aid = get_current_agent_id()
     if not current_aid:
@@ -537,14 +502,10 @@ def get_document_content_tool(filename: str) -> str:
 
 @tool
 def delete_document_tool(filename: str) -> str:
-    """从知识库中删除指定文档，同时移除其所有向量分块和原始文件。此操作不可恢复。
-
-    【用途】当用户确认要删除某个文档时使用。
-    注意：删除操作不可逆，请在调用前确认用户已明确指定要删除的文档名称。
+    """从知识库删除文档（不可恢复）。
 
     Args:
-        filename: 要删除的文档文件名（含扩展名），需与知识库中的文件名完全一致。
-                  示例：「员工手册.pdf」而非「员工手册」
+        filename: 文档文件名（含扩展名），如「员工手册.pdf」
     """
     current_aid_del = get_current_agent_id()
     if not current_aid_del:
@@ -560,21 +521,12 @@ def delete_document_tool(filename: str) -> str:
 
 @tool
 def modify_document_tool(filename: str, content: str, append: bool = False) -> str:
-    """修改知识库中已有文档的内容。支持替换全部内容或在原文末尾追加内容。
-
-    【用途】当用户要求修改、编辑、更新知识库中某个文档的内容时使用。
-    【典型问题】「帮我在xxx文件中添加yyy」「把xxx文档里的zzz改成www」「修改知识库的xxx文件」
-    【重要】修改后会自动重新索引到向量数据库，无需手动操作。
-    【操作流程】替换模式下，请先调用 get_document_content_tool 获取完整内容，在完整内容基础上进行修改，
-    然后将修改后的完整内容作为 content 参数传入。不要凭记忆或片段拼凑内容！
-    【注意】此工具仅用于修改知识库文档，不生成docx下载文件。如需导出文档，请使用 export_document_tool。
+    """修改知识库文档内容（自动重索引）。不生成下载文件，要导出用export工具。
 
     Args:
-        filename: 要修改的文档文件名（含扩展名），需与知识库中的文件名完全一致。
-                  示例：「教务处归口管理的校外人员劳务费发放附页-zy.docx」
-        content: 新的内容。如果是追加模式，这是要追加到文档末尾的内容；如果是替换模式，这是文档的完整新内容。
-        append: 是否追加模式。True=在原文末尾追加内容，False=用新内容替换整个文档（默认False）。
-                一般情况下，用户说"添加""追加""加上"用追加模式；用户说"修改""改为""替换"用替换模式。
+        filename: 文件名（含扩展名）
+        content: 新内容（追加模式=追加内容，替换模式=完整新内容）
+        append: True=追加，False=替换（默认）。替换前务必先读取完整原文！
     """
     current_aid_mod = get_current_agent_id()
     if not current_aid_mod:
@@ -648,30 +600,12 @@ def modify_document_tool(filename: str, content: str, append: bool = False) -> s
 
 @tool
 def export_document_tool(content: str, filename: str = "", title: str = "") -> str:
-    """将文本内容生成为docx文档并提供下载链接。用于生成综合文档、简略文档、汇总报告等。
-
-    【用途】当用户要求生成一个可下载的文档时使用。
-    【典型问题】
-    - 「帮我整理一份综合文档」「生成一份汇总报告」
-    - 「把知识库的内容整合成一个文档」
-    - 「导出为docx文件」「给我一个Word文档」
-    - 「生成一个简略版/精简版文档」
-    【与modify_document_tool的区别】
-    - modify_document_tool：修改知识库中已存在的文档（同时更新知识库索引）
-    - export_document_tool：生成新的文档文件供下载（不影响知识库，适合整合/汇总/生成新文档）
-    【DOCX内容要求】
-    - content中不要包含emoji表情符号，只包含纯文字和章节格式
-    - 用户说"不能出现表情包"等要求是对DOCX文档内容的要求，不是对对话回复的要求
-    - 【表格必须使用Markdown表格语法】使用 | 列1 | 列2 | 格式，会自动转为Word原生表格
-      正确示例：| 部门 | 职责 | 负责人 |
-      错误示例：用空格或符号对齐的假表格（如 部门    职责    负责人）
-    - 不要用多个空行分隔段落，系统会自动处理段落间距
-    - 使用 **粗体** 标记重要文字，会转为Word粗体格式
+    """生成docx文档并提供下载链接。不影响知识库，仅用于导出文件。
 
     Args:
-        content: 文档内容（Markdown格式，支持表格/标题/列表/粗体，不要包含emoji）。
-        filename: 输出文件名（含扩展名），为空则自动生成。示例：「FMEA团队汇总.docx」
-        title: 文档标题，为空则使用文件名。示例：「FMEA团队信息汇总」
+        content: 文档内容（Markdown格式，不要包含emoji）。表格用 | 列1 | 列2 | 格式。
+        filename: 输出文件名（含扩展名），为空则自动生成。
+        title: 文档标题，为空则使用文件名。
     """
     try:
         if not filename:
@@ -692,30 +626,12 @@ def export_document_tool(content: str, filename: str = "", title: str = "") -> s
 
 @tool
 def export_xlsx_tool(content: str, filename: str = "", title: str = "") -> str:
-    """将文本内容生成为xlsx（Excel）文档并提供下载链接。用于生成表格数据、汇总报表等Excel文件。
-
-    【用途】当用户要求生成一个可下载的Excel文件时使用。
-    【典型问题】
-    - 「帮我生成一个Excel表格」「导出为xlsx」
-    - 「把数据整理成Excel文件」「给我一个表格文件」
-    - 「生成一份报表」「导出数据到Excel」
-    - 「我要xlsx格式的」「不要docx，要xlsx」
-    【与export_document_tool的区别】
-    - export_document_tool：生成docx（Word）文档，适合文字报告
-    - export_xlsx_tool：生成xlsx（Excel）文档，适合表格数据和报表
-    【XLSX内容要求】
-    - content中使用Markdown表格语法：| 列1 | 列2 | 列3 |
-    - 表格外的文字会保留在对应工作表中（放在表格上方）
-    - 不要包含emoji表情符号
-    - ⚠️ 避免多Sheet拆分：DFMEA/PFMEA/控制计划等分析类表格，所有内容放在同一个工作表中
-    - 项目信息放在表格上方的单独行中（如：项目名称：XXX），不要另建Sheet
-    - 严重度(S)/频度(O)/探测度(D)评级标准、AP矩阵等参考内容不需要单独建Sheet，直接省略
-    - 不要使用 === Sheet: xxx === 标记拆分多个Sheet，除非用户明确要求多Sheet
+    """生成xlsx（Excel）文档并提供下载链接。适合表格数据和报表。
 
     Args:
-        content: 文档内容（Markdown格式，使用表格语法组织数据，不要包含emoji）。
-        filename: 输出文件名（含扩展名），为空则自动生成。示例：「FMEA团队汇总.xlsx」
-        title: 文档标题/工作表名称，为空则使用文件名。示例：「FMEA团队信息」
+        content: 表格内容（Markdown格式）。分析类表格放在同一工作表，不要拆分多Sheet。
+        filename: 输出文件名（含扩展名），为空则自动生成。
+        title: 工作表名称，为空则使用文件名。
     """
     try:
         if not filename:
@@ -738,18 +654,15 @@ def export_xlsx_tool(content: str, filename: str = "", title: str = "") -> str:
 
 @tool
 def github_api_tool(action: str, repo: str = "", path: str = "", content: str = "", message: str = "", token: str = "") -> str:
-    """与 GitHub 仓库进行交互，支持读取和更新文件。
-
-    【用途】当代码仓库操作需求时使用，如查看仓库内容、更新文件、获取文件内容等。
-    【典型问题】「帮我把这个改动推到GitHub」「查看仓库的文件列表」「更新某个文件」
+    """与 GitHub 仓库交互，支持读取和更新文件。
 
     Args:
-        action: 操作类型，支持 "read"（读取文件，大文件截断8000字）, "read_full"（读取完整文件，不截断）, "list"（列出目录内容）, "update"（更新文件）
-        repo: 仓库名称，格式 "owner/repo"，示例 "cy556-like/company-doc-agent"
-        path: 文件路径，示例 "app/config.py"
-        content: 更新文件时的文件内容（仅 action=update 时需要）
-        message: 更新文件时的 commit message（仅 action=update 时需要）
-        token: GitHub Personal Access Token（可选）。用户在对话中提供时可传入，用于写操作鉴权。未提供时从环境变量 GITHUB_TOKEN 读取。
+        action: "read"(截断) | "read_full"(完整) | "list"(目录) | "update"(更新)
+        repo: 仓库名称，格式 "owner/repo"
+        path: 文件路径
+        content: 更新文件内容（仅 action=update）
+        message: commit message（仅 action=update）
+        token: GitHub Token（可选，未提供则从环境变量读取）
     """
     import httpx
 
@@ -879,13 +792,10 @@ def github_api_tool(action: str, repo: str = "", path: str = "", content: str = 
 def send_email_tool(to: str, subject: str, body: str) -> str:
     """发送电子邮件通知。
 
-    【用途】当需要发送邮件通知时使用，如发送报告、通知审批结果等。
-    【典型问题】「发邮件通知技术部」「给张三发邮件」
-
     Args:
-        to: 收件人邮箱地址，多人用逗号分隔。示例："zhangsan@company.com" 或 "a@co.com,b@co.com"
+        to: 收件人邮箱，多人用逗号分隔
         subject: 邮件主题
-        body: 邮件正文内容
+        body: 邮件正文
     """
     import smtplib
     from email.mime.text import MIMEText
@@ -925,16 +835,11 @@ def send_email_tool(to: str, subject: str, body: str) -> str:
 
 @tool
 def database_query_tool(query: str, database: str = "default") -> str:
-    """执行 SQL 查询语句（只读），支持查询企业数据库。
-
-    【用途】当需要从数据库中查询业务数据时使用，如订单、库存、销售数据等。
-    【典型问题】「查询本月销售额」「库存还剩多少」「最近10笔订单」
-
-    注意：此工具只支持 SELECT 查询，不支持 INSERT/UPDATE/DELETE 等写操作。
+    """执行SQL只读查询（仅SELECT）。
 
     Args:
-        query: SQL 查询语句。示例："SELECT * FROM orders WHERE date > '2024-01-01' LIMIT 10"
-        database: 数据库名称（可选，默认为 default）
+        query: SQL查询语句，如 "SELECT * FROM orders LIMIT 10"
+        database: 数据库名称（可选，默认default）
     """
     # 安全检查：只允许 SELECT 语句
     normalized = query.strip().upper()
