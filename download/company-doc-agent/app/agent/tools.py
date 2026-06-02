@@ -186,7 +186,8 @@ def modify_document_tool(file_path: str, instruction: str) -> str:
 输出格式规则（重要！）：
 - 保持 Markdown 表格格式：| 列1 | 列2 | 列3 |
 - 第一行必须是表头，第二行是 |------|------|------| 分隔线
-- 每个 Sheet 用 === Sheet: 工作表名 === 标记
+- ⚠️ 不要使用 === Sheet: xxx === 标记拆分多个Sheet，所有内容放在一个工作表中
+- 项目信息放在表格上方的单独行中（如：项目名称：XXX），不要另建Sheet
 - 不要添加额外的解释或注释
 - 用中文输出"""
         else:
@@ -281,7 +282,9 @@ def create_document_tool(filename: str, content_description: str, file_format: s
 输出格式规则（必须严格遵守！）：
 - 使用 Markdown 表格格式：| 列1 | 列2 | 列3 |
 - 第一行必须是表头，第二行是 |------|------|------| 分隔线
-- 每个 Sheet 用 === Sheet: 工作表名 === 标记开头
+- ⚠️ 不要使用 === Sheet: xxx === 标记拆分多个Sheet，所有内容放在一个工作表中
+- 项目信息放在表格上方的单独行中（如：项目名称：XXX），不要另建Sheet
+- 严重度(S)/频度(O)/探测度(D)评级标准、AP矩阵等参考内容不需要单独建Sheet，直接省略
 - 只输出表格数据，不要添加任何解释说明
 - 用中文输出
 - 内容要完整详细，不要省略行"""

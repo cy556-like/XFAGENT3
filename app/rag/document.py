@@ -2771,6 +2771,8 @@ def export_document_as_xlsx(content: str, filename: str, title: str = "", sessio
         header_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         cell_font = Font(size=10, name='宋体')
         cell_alignment = Alignment(vertical='center', wrap_text=True)
+        info_font = Font(size=10, name='宋体')
+        info_alignment = Alignment(vertical='center', wrap_text=True)
         thin_border = Border(
             left=Side(style='thin'),
             right=Side(style='thin'),
@@ -2783,7 +2785,7 @@ def export_document_as_xlsx(content: str, filename: str, title: str = "", sessio
         sheet_index = 0
         current_sheet_name = title or filename.rsplit('.', 1)[0]
         current_rows = []  # list of list of strings
-        non_table_lines = []  # non-table content
+        pending_info_lines = []  # non-table content to be written above the next table
         has_table = False
         
         for line in lines:
@@ -2804,9 +2806,11 @@ def export_document_as_xlsx(content: str, filename: str, title: str = "", sessio
                     sheet_index = _write_rows_to_xlsx_sheet(
                         wb, current_rows, sheet_index, current_sheet_name,
                         header_font, header_fill, header_alignment, 
-                        cell_font, cell_alignment, thin_border
+                        cell_font, cell_alignment, thin_border,
+                        info_lines=pending_info_lines, info_font=info_font, info_alignment=info_alignment
                     )
                     current_rows = []
+                    pending_info_lines = []
                     current_sheet_name = f'表格{sheet_index + 1}'
                 
                 # Collect non-table content
@@ -2815,24 +2819,28 @@ def export_document_as_xlsx(content: str, filename: str, title: str = "", sessio
                     heading_match = re.match(r'^#{1,3}\s+(.+)', stripped)
                     if heading_match and not has_table:
                         current_sheet_name = heading_match.group(1).strip()[:31]  # Excel sheet name max 31 chars
-                    non_table_lines.append(stripped)
+                    # Clean markdown formatting and add as pending info
+                    clean_text = re.sub(r'\*+', '', stripped)  # Remove markdown bold markers
+                    clean_text = re.sub(r'^#{1,6}\s+', '', clean_text)  # Remove heading markers
+                    if clean_text.strip():
+                        pending_info_lines.append(clean_text.strip())
         
         # Flush remaining table rows
         if current_rows:
             sheet_index = _write_rows_to_xlsx_sheet(
                 wb, current_rows, sheet_index, current_sheet_name,
                 header_font, header_fill, header_alignment,
-                cell_font, cell_alignment, thin_border
+                cell_font, cell_alignment, thin_border,
+                info_lines=pending_info_lines, info_font=info_font, info_alignment=info_alignment
             )
+            pending_info_lines = []
         
         # If there's non-table content but no tables, write text to first sheet
-        if non_table_lines and not has_table:
+        if pending_info_lines and not has_table:
             ws = wb.active
             ws.title = current_sheet_name[:31] if current_sheet_name else 'Sheet1'
-            for row_idx, text in enumerate(non_table_lines, 1):
-                clean_text = re.sub(r'\*+', '', text)  # Remove markdown bold markers
-                clean_text = re.sub(r'^#{1,6}\s+', '', clean_text)  # Remove heading markers
-                ws.cell(row=row_idx, column=1, value=clean_text)
+            for row_idx, text in enumerate(pending_info_lines, 1):
+                ws.cell(row=row_idx, column=1, value=text)
         
         # Remove default empty sheet if we created others
         if sheet_index > 0 and 'Sheet' in wb.sheetnames:
@@ -2853,8 +2861,15 @@ def export_document_as_xlsx(content: str, filename: str, title: str = "", sessio
 
 def _write_rows_to_xlsx_sheet(wb, rows_data, sheet_index, sheet_name, 
                                 header_font, header_fill, header_alignment,
-                                cell_font, cell_alignment, thin_border):
+                                cell_font, cell_alignment, thin_border,
+                                info_lines=None, info_font=None, info_alignment=None):
     """Write parsed table rows to an XLSX worksheet
+    
+    Args:
+        info_lines: Optional list of non-table text lines to write above the table
+                    (e.g., project info like "项目名称: XXX")
+        info_font: Font for info lines
+        info_alignment: Alignment for info lines
     
     Returns:
         int: next sheet index
@@ -2865,16 +2880,39 @@ def _write_rows_to_xlsx_sheet(wb, rows_data, sheet_index, sheet_name,
     else:
         ws = wb.create_sheet(title=(sheet_name or f'表格{sheet_index+1}')[:31])
     
+    # Write info lines above the table (e.g., project metadata)
+    info_row_count = 0
+    if info_lines:
+        for i, text in enumerate(info_lines):
+            row_num = i + 1
+            # Try to parse "key: value" or "key：value" patterns into two columns
+            kv_match = re.match(r'^(.+?)[：:]\s*(.+)$', text)
+            if kv_match:
+                cell_key = ws.cell(row=row_num, column=1, value=kv_match.group(1).strip())
+                cell_val = ws.cell(row=row_num, column=2, value=kv_match.group(2).strip())
+                cell_key.font = info_font or cell_font
+                cell_key.alignment = info_alignment or cell_alignment
+                cell_val.font = info_font or cell_font
+                cell_val.alignment = info_alignment or cell_alignment
+            else:
+                cell = ws.cell(row=row_num, column=1, value=text)
+                cell.font = info_font or cell_font
+                cell.alignment = info_alignment or cell_alignment
+            info_row_count = i + 1
+    
+    # Add a blank row between info and table if info exists
+    table_start_row = info_row_count + 1 if info_row_count > 0 else 1
+    
     num_cols = max(len(row) for row in rows_data)
     
-    for row_idx, row in enumerate(rows_data, 1):
+    for row_idx, row in enumerate(rows_data, table_start_row):
         for col_idx, cell_text in enumerate(row[:num_cols], 1):
             # Clean markdown formatting
             clean_text = re.sub(r'\*+', '', cell_text)
             cell = ws.cell(row=row_idx, column=col_idx, value=clean_text)
             cell.border = thin_border
             
-            if row_idx == 1:
+            if row_idx == table_start_row:
                 # Header row
                 cell.font = header_font
                 cell.fill = header_fill
@@ -2891,6 +2929,16 @@ def _write_rows_to_xlsx_sheet(wb, rows_data, sheet_index, sheet_name,
                 cell_len = len(str(row[col_idx - 1]))
                 if cell_len > max_length:
                     max_length = cell_len
+        # Also consider info_lines width for columns 1-2
+        if info_lines and col_idx <= 2:
+            for text in info_lines:
+                kv_match = re.match(r'^(.+?)[：:]\s*(.+)$', text)
+                if kv_match and col_idx == 1:
+                    max_length = max(max_length, len(kv_match.group(1).strip()))
+                elif kv_match and col_idx == 2:
+                    max_length = max(max_length, len(kv_match.group(2).strip()))
+                elif col_idx == 1:
+                    max_length = max(max_length, len(text))
         # Cap at 50, min at 8
         adjusted_width = min(max(max_length + 2, 8), 50)
         ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = adjusted_width

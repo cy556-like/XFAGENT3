@@ -705,9 +705,12 @@ def export_xlsx_tool(content: str, filename: str = "", title: str = "") -> str:
     - export_xlsx_tool：生成xlsx（Excel）文档，适合表格数据和报表
     【XLSX内容要求】
     - content中使用Markdown表格语法：| 列1 | 列2 | 列3 |
-    - 每个Markdown表格会自动转为Excel的一个工作表
-    - 表格外的文字也会保留在对应工作表中
+    - 表格外的文字会保留在对应工作表中（放在表格上方）
     - 不要包含emoji表情符号
+    - ⚠️ 避免多Sheet拆分：DFMEA/PFMEA/控制计划等分析类表格，所有内容放在同一个工作表中
+    - 项目信息放在表格上方的单独行中（如：项目名称：XXX），不要另建Sheet
+    - 严重度(S)/频度(O)/探测度(D)评级标准、AP矩阵等参考内容不需要单独建Sheet，直接省略
+    - 不要使用 === Sheet: xxx === 标记拆分多个Sheet，除非用户明确要求多Sheet
 
     Args:
         content: 文档内容（Markdown格式，使用表格语法组织数据，不要包含emoji）。
