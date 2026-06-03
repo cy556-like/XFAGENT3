@@ -6,15 +6,19 @@ FastAPI 路由定义
 1. 新增 SSE 流式对话接口 /chat/stream — 实时输出，用户感知更快
 2. 所有 LLM 调用加上 request_timeout 保护
 3. /modify-document 接口也加上超时保护
+4. 新增导出文件下载接口 /documents/export-download/{filename}
+5. 新增会话内存清理机制（配合 manager.py）
 """
 import os
 import shutil
 import json
+import time
+import gc
 import tempfile
 from typing import Optional
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 
 from app.agent.core import chat, chat_stream
@@ -22,6 +26,7 @@ from app.rag.document import index_document, search_documents, list_indexed_docu
 from app.memory.manager import (
     get_history_messages, clear_session_history,
     create_chat, list_chats, delete_chat, rename_chat, update_chat_time,
+    cleanup_stale_sessions,
 )
 from app.auth.user_manager import login_user, register_user
 from app.config import settings
@@ -119,6 +124,9 @@ async def chat_api(req: ChatRequest):
     - 支持多轮对话
     """
     try:
+        # 定期清理不活跃的会话缓存，防止内存泄漏
+        cleanup_stale_sessions()
+
         response = chat(req.message, req.session_id)
         # 更新会话时间
         parts = req.session_id.rsplit("_", 1)
@@ -151,6 +159,9 @@ async def chat_stream_api(req: ChatRequest):
     }});
     // 或用 fetch + ReadableStream
     """
+    # 定期清理不活跃的会话缓存，防止内存泄漏
+    cleanup_stale_sessions()
+
     async def event_generator():
         try:
             async for chunk in chat_stream(req.message, req.session_id):
@@ -427,6 +438,49 @@ async def list_documents():
     return {"documents": docs, "count": len(docs)}
 
 
+# ===== 导出文件下载接口 =====
+
+@router.get("/documents/export-download/{filename}", summary="下载导出的文档")
+async def export_download(filename: str):
+    """
+    下载 Agent 导出的文档（DOCX/XLSX）
+    文件存储在 static/exports/ 目录下
+    """
+    static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+    exports_dir = os.path.join(static_dir, "exports")
+
+    # 在 exports 目录及其子目录中查找文件
+    file_path = None
+
+    # 1. 直接在 exports 目录查找
+    direct_path = os.path.join(exports_dir, filename)
+    if os.path.exists(direct_path):
+        file_path = direct_path
+
+    # 2. 在 exports 的子目录中查找（session_id 隔离存储）
+    if not file_path and os.path.exists(exports_dir):
+        for subdir in os.listdir(exports_dir):
+            subdir_path = os.path.join(exports_dir, subdir, filename)
+            if os.path.exists(subdir_path):
+                file_path = subdir_path
+                break
+
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"文件 {filename} 不存在或已过期")
+
+    # 安全检查：确保文件路径在 exports 目录内（防止路径遍历攻击）
+    real_exports = os.path.realpath(exports_dir)
+    real_file = os.path.realpath(file_path)
+    if not real_file.startswith(real_exports):
+        raise HTTPException(status_code=403, detail="访问被拒绝")
+
+    return FileResponse(
+        path=file_path,
+        filename=filename,
+        media_type="application/octet-stream",
+    )
+
+
 # ===== 对话历史接口 =====
 
 @router.get("/history/{session_id}", summary="获取对话历史")
@@ -441,3 +495,37 @@ async def delete_history(session_id: str):
     """清除指定会话的对话历史"""
     clear_session_history(session_id)
     return {"status": "success", "message": f"会话 {session_id} 的历史已清除"}
+
+
+# ===== 内存清理接口（调试用） =====
+
+@router.post("/cleanup", summary="清理服务器内存缓存")
+async def cleanup_memory():
+    """
+    手动触发内存清理：
+    - 清理不活跃的会话缓存
+    - 触发 Python 垃圾回收
+    - 返回清理统计信息
+    """
+    from app.agent.tools import get_cache_stats
+
+    # 1. 清理不活跃的会话
+    cleaned_sessions = cleanup_stale_sessions()
+
+    # 2. 清理工具缓存中过期的条目
+    cache_stats_before = get_cache_stats()
+
+    # 3. 强制垃圾回收
+    collected = gc.collect()
+
+    # 4. 统计当前内存中的会话数
+    from app.memory.manager import _session_store
+    active_sessions = len(_session_store)
+
+    return {
+        "success": True,
+        "cleaned_sessions": cleaned_sessions,
+        "active_sessions": active_sessions,
+        "gc_collected": collected,
+        "cache_stats": cache_stats_before,
+    }

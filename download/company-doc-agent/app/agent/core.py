@@ -9,9 +9,11 @@ ReAct = Reasoning(推理) + Acting(行动) → 边思考边行动
 3. 智能历史裁剪 — 去掉过长的 ToolMessage，保留对话主线
 4. 搜索次数限制 — 每轮最多搜索 N 次，防止冗余搜索
 5. 超时重试 — think 节点自带重试，防止单次超时导致整体失败
+6. Agent 实例定期重建 — 防止长时间运行导致内存泄漏
 """
 import asyncio
 import logging
+import time
 from typing import Annotated, AsyncGenerator
 from typing_extensions import TypedDict
 
@@ -22,7 +24,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 from app.config import settings
-from app.agent.tools import ALL_TOOLS
+from app.agent.tools import ALL_TOOLS, set_current_agent_id, set_current_session_id, reset_search_count
 from app.agent.prompts import SYSTEM_PROMPT
 from app.memory.manager import get_session_history
 
@@ -39,6 +41,9 @@ MAX_SEARCH_PER_ROUND = 3
 
 # think 节点超时重试次数
 THINK_RETRY_COUNT = 2
+
+# Agent 实例重建间隔（秒）：防止长时间运行导致内存泄漏
+AGENT_REBUILD_INTERVAL = 3600  # 1小时重建一次
 
 
 # ===== 1. 定义 Agent 状态 =====
@@ -220,22 +225,47 @@ def create_agent_graph():
     return graph.compile()
 
 
-# ===== 5. 全局 Agent 实例 =====
+# ===== 5. 全局 Agent 实例（带定期重建） =====
 _agent_graph = None
+_agent_create_time = 0
 
 
 def get_agent():
-    """获取 Agent 单例（懒加载）"""
-    global _agent_graph
-    if _agent_graph is None:
+    """
+    获取 Agent 单例（懒加载，定期重建防止内存泄漏）
+
+    重建机制：每隔 AGENT_REBUILD_INTERVAL 秒重建一次 Agent 实例，
+    防止长时间运行导致的 LLM 连接池泄漏和内存累积。
+    """
+    global _agent_graph, _agent_create_time
+    now = time.time()
+    if _agent_graph is None or (now - _agent_create_time) > AGENT_REBUILD_INTERVAL:
+        if _agent_graph is not None:
+            logger.info(f"Agent 实例已运行 {int(now - _agent_create_time)} 秒，正在重建...")
         _agent_graph = create_agent_graph()
+        _agent_create_time = now
     return _agent_graph
+
+
+def _parse_session_agent_id(session_id: str) -> str:
+    """从 session_id 中解析 agent_id（如果 session_id 包含 agent 信息）"""
+    # session_id 格式：username_uuid 或 username_agentid_uuid
+    # 目前简单处理：返回 None，后续可以扩展
+    return None
 
 
 def chat(user_input: str, session_id: str = "default") -> str:
     """
     与 Agent 对话的核心方法（同步版本，供 REST API 使用）
+
+    优化：
+    - 每次对话前重置搜索计数
+    - 使用 trim_history 防止上下文过长
+    - 异常处理：超时返回友好提示，不崩溃
     """
+    # 重置搜索计数
+    reset_search_count()
+
     agent = get_agent()
     history = get_session_history(session_id)
     recent_messages = trim_history(history.messages, MAX_HISTORY_MESSAGES)
@@ -262,7 +292,16 @@ def chat(user_input: str, session_id: str = "default") -> str:
 async def chat_stream(user_input: str, session_id: str = "default") -> AsyncGenerator[str, None]:
     """
     与 Agent 对话的流式输出方法（供 SSE 使用）
+
+    优化：
+    - 每次对话前重置搜索计数
+    - 使用 trim_history 防止上下文过长
+    - 异常处理：超时返回友好提示，不崩溃
+    - 完成后自动保存到历史
     """
+    # 重置搜索计数
+    reset_search_count()
+
     agent = get_agent()
     history = get_session_history(session_id)
     recent_messages = trim_history(history.messages, MAX_HISTORY_MESSAGES)

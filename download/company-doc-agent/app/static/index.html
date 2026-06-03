@@ -371,6 +371,14 @@
         .rename-card .confirm-btn { background: var(--accent); color: white; }
         .rename-card .confirm-btn:hover { background: var(--accent-hover); }
 
+        /* ===== 流式输出光标 ===== */
+        .streaming-cursor {
+            animation: blink 0.8s infinite;
+            color: var(--accent);
+            font-weight: bold;
+        }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -523,6 +531,7 @@ let isLoading = false;
 let currentChatId = null;
 let allChats = [];
 let renamingChatId = null;
+let currentStreamBubble = null;  // 当前流式输出的气泡元素
 
 // ===== 登录/注册 =====
 function switchTab(tab) {
@@ -786,18 +795,92 @@ async function sendMessage() {
         } catch (e) { showTyping(false); addMessageToUI('assistant', '上传失败，请重试'); }
         removeFile();
     } else {
+        // 纯文本消息：使用 SSE 流式对话
         addMessageToUI('user', message);
-        input.value = ''; autoResize(input); showTyping(true);
+        input.value = ''; autoResize(input);
         try {
-            const resp = await fetch('/api/v1/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, session_id: currentChatId }) });
-            const data = await resp.json();
-            showTyping(false);
-            addMessageToUI('assistant', data.response);
-            // 更新侧边栏标题
+            await sendStreamMessage(message, currentChatId);
             await loadChatList();
-        } catch (e) { showTyping(false); addMessageToUI('assistant', '网络错误，请重试'); }
+        } catch (e) { addMessageToUI('assistant', '网络错误，请重试'); }
     }
     isLoading = false; document.getElementById('sendBtn').disabled = false; scrollToBottom();
+}
+
+// ===== SSE 流式对话 =====
+async function sendStreamMessage(message, sessionId) {
+    // 创建 AI 回复的气泡（流式填充）
+    const container = document.getElementById('chatMessages');
+    const div = document.createElement('div');
+    div.className = 'message assistant';
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar';
+    avatar.textContent = '🤖';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.innerHTML = '<span class="streaming-cursor">▌</span>';
+    div.appendChild(avatar); div.appendChild(bubble); container.appendChild(div);
+    currentStreamBubble = bubble;
+    scrollToBottom();
+
+    let fullContent = '';
+
+    try {
+        const resp = await fetch('/api/v1/chat/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message, session_id: sessionId })
+        });
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';  // 保留未完成的行
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const jsonStr = line.slice(6).trim();
+                if (!jsonStr) continue;
+
+                try {
+                    const data = JSON.parse(jsonStr);
+
+                    if (data.error) {
+                        fullContent += data.error;
+                        break;
+                    }
+
+                    if (data.done) {
+                        // 流式结束
+                        break;
+                    }
+
+                    if (data.content) {
+                        fullContent += data.content;
+                        // 实时更新气泡内容
+                        bubble.innerHTML = formatMessageContent(fullContent) + '<span class="streaming-cursor">▌</span>';
+                        scrollToBottom();
+                    }
+                } catch (parseErr) {
+                    // 忽略 JSON 解析错误
+                }
+            }
+        }
+    } catch (e) {
+        if (!fullContent) {
+            fullContent = '网络错误，请重试';
+        }
+    }
+
+    // 移除光标，最终渲染
+    bubble.innerHTML = formatMessageContent(fullContent);
+    currentStreamBubble = null;
 }
 
 function sendQuick(text) { document.getElementById('msgInput').value = text; sendMessage(); }
@@ -811,8 +894,36 @@ function addMessageToUI(role, content) {
     avatar.textContent = role === 'user' ? '👤' : '🤖';
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    bubble.innerHTML = content.replace(/\n/g, '<br>');
+    bubble.innerHTML = formatMessageContent(content);
     div.appendChild(avatar); div.appendChild(bubble); container.appendChild(div); scrollToBottom();
+}
+
+// 格式化消息内容：处理换行、下载链接、URL 等
+function formatMessageContent(content) {
+    if (!content) return '';
+    let html = escapeHtml(content);
+
+    // 1. 将下载链接转换为可点击的按钮
+    // 匹配 /api/v1/documents/export-download/xxx 或 /static/modified/xxx
+    html = html.replace(
+        /(\/api\/v1\/documents\/export-download\/[^\s<"']+)/g,
+        '<a href="$1" class="download-link" target="_blank" download>📥 下载文件</a>'
+    );
+    html = html.replace(
+        /(\/static\/modified\/[^\s<"']+)/g,
+        '<a href="$1" class="download-link" target="_blank" download>📥 下载修改后的文件</a>'
+    );
+
+    // 2. 将其他 URL 转换为可点击链接
+    html = html.replace(
+        /(https?:\/\/[^\s<"']+)/g,
+        '<a href="$1" target="_blank" style="color:var(--accent);text-decoration:underline;">$1</a>'
+    );
+
+    // 3. 处理换行
+    html = html.replace(/\n/g, '<br>');
+
+    return html;
 }
 
 function showTyping(show) { document.getElementById('typingIndicator').style.display = show ? 'block' : 'none'; if (show) scrollToBottom(); }

@@ -60,6 +60,10 @@ def create_app() -> FastAPI:
     modified_dir = os.path.join(static_dir, "modified")
     os.makedirs(modified_dir, exist_ok=True)
 
+    # 确保导出文件目录存在（Agent 导出的文档）
+    exports_dir = os.path.join(static_dir, "exports")
+    os.makedirs(exports_dir, exist_ok=True)
+
     # 挂载静态文件目录（包含 index.html 和修改后的文档）
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
