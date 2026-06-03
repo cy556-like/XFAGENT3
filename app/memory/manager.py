@@ -3,12 +3,17 @@
 管理每个用户/会话的对话历史，支持多轮对话
 支持文件持久化存储，重启后历史不丢失
 支持多会话管理：创建、列出、删除、重命名
+
+性能优化:
+- 会话存储LRU淘汰：_session_store 限制最大数量，避免内存无限增长
+- 自动清理：长时间未访问的会话从内存中移除（文件持久化不受影响）
 """
 import os
 import json
 import uuid
 import time
-from collections import defaultdict
+import logging
+from collections import OrderedDict
 from typing import Optional
 
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
@@ -16,6 +21,17 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+# ===== 会话存储上限（防止内存泄漏）=====
+# 超过此数量的会话将按 LRU 策略淘汰最久未访问的
+# 淘汰仅释放内存中的对象，不影响文件持久化（下次访问时自动重新加载）
+MAX_SESSION_STORE_SIZE = 200
+
+# 会话最大空闲时间（秒），超过此时间未访问的会话从内存移除
+# 2小时 = 7200秒
+SESSION_MAX_IDLE_SECONDS = 7200
 
 
 class FileBasedHistory(BaseChatMessageHistory):
@@ -90,25 +106,46 @@ class InMemoryHistory(BaseChatMessageHistory):
         self._messages = []
 
 
-# 全局会话存储：session_id -> ChatMessageHistory
-_session_store: dict[str, BaseChatMessageHistory] = {}
+# 全局会话存储：session_id -> (ChatMessageHistory, last_access_time)
+# 使用 OrderedDict 实现 LRU 淘汰，避免长时间运行后内存无限增长
+_session_store: OrderedDict[str, tuple] = OrderedDict()
 
 
 def get_session_history(session_id: str) -> BaseChatMessageHistory:
-    """获取指定会话的对话历史（文件持久化）"""
-    if session_id not in _session_store:
-        try:
-            _session_store[session_id] = FileBasedHistory(session_id)
-        except Exception:
-            # 如果文件持久化失败，回退到内存存储
-            _session_store[session_id] = InMemoryHistory()
-    return _session_store[session_id]
+    """获取指定会话的对话历史（文件持久化 + LRU淘汰）
+    
+    LRU策略：每次访问将会话移到OrderedDict末尾，
+    超过 MAX_SESSION_STORE_SIZE 时淘汰最久未访问的会话。
+    淘汰仅释放内存，不影响磁盘文件（下次访问时自动重新加载）。
+    """
+    if session_id in _session_store:
+        # LRU: 移到末尾（最近访问）
+        _session_store.move_to_end(session_id)
+        history, _ = _session_store[session_id]
+        _session_store[session_id] = (history, time.time())
+        return history
+    
+    # 新会话：加载文件
+    try:
+        history = FileBasedHistory(session_id)
+    except Exception:
+        history = InMemoryHistory()
+    
+    _session_store[session_id] = (history, time.time())
+    
+    # LRU淘汰：超过上限时移除最久未访问的
+    while len(_session_store) > MAX_SESSION_STORE_SIZE:
+        oldest_id, _ = _session_store.popitem(last=False)
+        logger.debug(f"LRU淘汰会话: {oldest_id}（内存释放，文件保留）")
+    
+    return history
 
 
 def clear_session_history(session_id: str) -> None:
     """清除指定会话的对话历史"""
     if session_id in _session_store:
-        _session_store[session_id].clear()
+        history, _ = _session_store[session_id]
+        history.clear()
         del _session_store[session_id]
 
 
@@ -120,6 +157,30 @@ def get_history_messages(session_id: str) -> list[dict]:
         role = "user" if isinstance(msg, HumanMessage) else "assistant"
         messages.append({"role": role, "content": msg.content})
     return messages
+
+
+def cleanup_idle_sessions() -> int:
+    """清理长时间未访问的会话（释放内存，不影响文件持久化）
+    
+    定期调用此函数，将超过 SESSION_MAX_IDLE_SECONDS 未访问的会话从内存中移除。
+    下次访问时自动从文件重新加载。
+    
+    Returns:
+        int: 被清理的会话数量
+    """
+    now = time.time()
+    to_remove = []
+    for sid, (history, last_access) in _session_store.items():
+        if now - last_access > SESSION_MAX_IDLE_SECONDS:
+            to_remove.append(sid)
+    
+    for sid in to_remove:
+        del _session_store[sid]
+    
+    if to_remove:
+        logger.info(f"清理了 {len(to_remove)} 个空闲超过 {SESSION_MAX_IDLE_SECONDS}s 的会话（内存释放，文件保留）")
+    
+    return len(to_remove)
 
 
 # ===== 多会话管理 =====

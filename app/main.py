@@ -202,11 +202,20 @@ def create_app() -> FastAPI:
     # 健康检查（基础版）
     @app.get("/health")
     async def health():
+        # 增加内存使用信息，方便监控
+        mem_info = {}
+        try:
+            from app.memory.manager import _session_store
+            mem_info["session_cache_size"] = len(_session_store)
+            mem_info["session_cache_max"] = 200
+        except Exception:
+            pass
         return {
             "status": "ok" if not _shutdown_requested else "shutting_down",
             "service": "company-doc-agent",
             "version": "4.0.0",
             "active_connections": _active_connections,
+            "memory": mem_info,
         }
 
     # [#25] 优雅关闭：处理 SIGTERM / SIGINT
@@ -216,6 +225,74 @@ def create_app() -> FastAPI:
         _shutdown_requested = True
         logger = logging.getLogger("app")
         logger.info(f"收到关闭信号，等待 {_active_connections} 个活跃连接完成...")
+
+    # ===== 后台定期清理任务：防止内存泄漏 =====
+    @app.on_event("startup")
+    async def startup_cleanup_task():
+        """启动后台定期清理任务，防止长时间运行后内存/磁盘无限增长"""
+        import asyncio
+        
+        async def _periodic_cleanup():
+            """每10分钟执行一次清理：
+            1. 清理长时间未访问的会话（释放内存）
+            2. 清理过期的导出文件（释放磁盘）
+            3. 清理请求统计中的旧端点数据
+            """
+            while True:
+                try:
+                    await asyncio.sleep(600)  # 10分钟执行一次
+                    if _shutdown_requested:
+                        break
+                    
+                    logger = logging.getLogger("app.cleanup")
+                    
+                    # 1. 清理空闲会话（释放内存，文件持久化不受影响）
+                    try:
+                        from app.memory.manager import cleanup_idle_sessions
+                        cleaned = cleanup_idle_sessions()
+                        if cleaned > 0:
+                            logger.info(f"[定期清理] 释放了 {cleaned} 个空闲会话的内存")
+                    except Exception as e:
+                        logger.warning(f"[定期清理] 会话清理失败: {e}")
+                    
+                    # 2. 清理过期的导出文件（超过24小时的）
+                    try:
+                        from app.rag.document import cleanup_export_files
+                        export_dir = os.path.join(settings.DATA_DIR, "export")
+                        if os.path.exists(export_dir):
+                            cleaned_files = 0
+                            now = time.time()
+                            max_age = 86400  # 24小时
+                            for item in os.listdir(export_dir):
+                                sub_dir = os.path.join(export_dir, item)
+                                if os.path.isdir(sub_dir):
+                                    # 检查目录修改时间
+                                    try:
+                                        mtime = os.path.getmtime(sub_dir)
+                                        if now - mtime > max_age:
+                                            import shutil
+                                            shutil.rmtree(sub_dir)
+                                            cleaned_files += 1
+                                    except Exception:
+                                        pass
+                            if cleaned_files > 0:
+                                logger.info(f"[定期清理] 清理了 {cleaned_files} 个过期导出目录（>24h）")
+                    except Exception as e:
+                        logger.warning(f"[定期清理] 导出文件清理失败: {e}")
+                    
+                    # 3. 记录当前内存状态
+                    try:
+                        from app.memory.manager import _session_store
+                        logger.info(f"[定期清理] 会话缓存: {len(_session_store)}/{200}, 活跃连接: {_active_connections}")
+                    except Exception:
+                        pass
+                    
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logging.getLogger("app.cleanup").warning(f"[定期清理] 异常: {e}")
+        
+        asyncio.create_task(_periodic_cleanup(), name="periodic_cleanup")
 
     return app
 
@@ -347,4 +424,7 @@ if __name__ == "__main__":
         port=settings.APP_PORT,
         # [#25] 优雅关闭：设置超时
         timeout_graceful_shutdown=30,
+        # 性能优化：限制 keep-alive 连接超时，避免空闲连接堆积
+        # 默认5秒，改为30秒（SSE流式响应需要较长的空闲间隔）
+        timeout_keep_alive=30,
     )

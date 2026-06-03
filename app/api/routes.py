@@ -253,18 +253,28 @@ async def chat_api(req: ChatRequest, username: str = Depends(get_current_user)):
 
 
 @router.post("/chat/stream", summary="与 Agent 对话（流式 SSE）")
-async def chat_stream_api(req: ChatRequest, username: str = Depends(get_current_user)):
+async def chat_stream_api(req: ChatRequest, request: Request, username: str = Depends(get_current_user)):
     """
     流式对话接口：逐 token 输出，同时显示工具调用进度
     返回 Server-Sent Events (SSE) 流
+    
+    性能优化：检测客户端断开，避免服务端空转消耗资源
     """
     start = time.time()
     # 记录统计
     record_message(username=username or "anonymous", model_id=get_current_model())
 
     async def event_generator():
-        async for chunk in chat_stream_generator(req.message, req.session_id, web_search=req.web_search, mode=req.mode, deep_think=req.deep_think, agent_id=req.agent_id, agent_task=req.agent_task):
-            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        try:
+            async for chunk in chat_stream_generator(req.message, req.session_id, web_search=req.web_search, mode=req.mode, deep_think=req.deep_think, agent_id=req.agent_id, agent_task=req.agent_task):
+                # 检测客户端是否已断开连接，避免服务端空转
+                if await request.is_disconnected():
+                    logger.info(f"SSE客户端已断开，停止生成: session={req.session_id}")
+                    break
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            logger.info(f"SSE流被取消: session={req.session_id}")
+            return
         # 更新会话时间
         try:
             parts = req.session_id.split("_", 1)
@@ -287,6 +297,7 @@ async def chat_stream_api(req: ChatRequest, username: str = Depends(get_current_
 
 @router.post("/chat-with-file/stream", summary="带文件的流式对话")
 async def chat_with_file_stream(
+    request: Request,
     file: UploadFile = File(...),
     message: str = Form(""),
     session_id: str = Form("default"),
@@ -339,8 +350,14 @@ async def chat_with_file_stream(
         ]
         # 直接调用多模态流式生成
         async def event_generator():
-            async for chunk in chat_stream_generator_multimodal(multimodal_content, session_id, agent_id=agent_id, agent_task=agent_task):
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            try:
+                async for chunk in chat_stream_generator_multimodal(multimodal_content, session_id, agent_id=agent_id, agent_task=agent_task):
+                    if await request.is_disconnected():
+                        logger.info(f"SSE客户端已断开(图片模式)，停止生成: session={session_id}")
+                        break
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            except asyncio.CancelledError:
+                return
             try:
                 parts = session_id.split("_", 1)
                 if len(parts) == 2:
@@ -414,8 +431,14 @@ async def chat_with_file_stream(
     async def event_generator():
         aid = agent_id if agent_id else None
         atask = agent_task if agent_task else None
-        async for chunk in chat_stream_generator(full_message, session_id, web_search=web_search, mode=mode, deep_think=deep_think, agent_id=aid, agent_task=atask):
-            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        try:
+            async for chunk in chat_stream_generator(full_message, session_id, web_search=web_search, mode=mode, deep_think=deep_think, agent_id=aid, agent_task=atask):
+                if await request.is_disconnected():
+                    logger.info(f"SSE客户端已断开(文档模式)，停止生成: session={session_id}")
+                    break
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            return
         try:
             parts = session_id.split("_", 1)
             if len(parts) == 2:
