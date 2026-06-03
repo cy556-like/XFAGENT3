@@ -185,15 +185,17 @@ def create_agent_graph(web_search: bool = False):
     llm_with_tools = llm.bind_tools(tools)
     system_prompt = _inject_current_date(SYSTEM_PROMPT_WITH_WEB_SEARCH if web_search else SYSTEM_PROMPT)
 
-    def think(state: AgentState):
-        """LLM 思考：分析用户问题，决定是否调用工具
+    async def think(state: AgentState):
+        """LLM 思考：分析用户问题，决定是否调用工具（异步）
         
-        [性能修复] 使用同步 invoke()，LangGraph 的 astream_events 会在独立线程中执行此函数，
-        避免与事件循环竞争，比 async ainvoke() 在多轮工具调用场景下快约1分钟。
+        [性能修复 v2] 改回 async + ainvoke()，原因：
+        - sync invoke() 在线程中执行时，on_chat_model_stream 事件跨线程转发会延迟/丢失
+        - 导致 full_response 为空，触发 fallback 重新执行整个 Agent（等于做两遍，2x变慢）
+        - async ainvoke() 在事件循环中直接触发流式事件，token逐个输出，无需 fallback
         """
         messages = state["messages"]
         system_msg = SystemMessage(content=system_prompt)
-        response = llm_with_tools.invoke([system_msg] + messages)
+        response = await llm_with_tools.ainvoke([system_msg] + messages)
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
@@ -385,15 +387,14 @@ def get_agent_with_prompt(custom_system_prompt: str, web_search: bool = False):
     tools = get_tools(web_search=web_search)
     llm_with_tools = llm.bind_tools(tools)
 
-    def think(state: AgentState):
-        """LLM 思考：分析用户问题，决定是否调用工具
+    async def think(state: AgentState):
+        """LLM 思考：分析用户问题，决定是否调用工具（异步）
         
-        [性能修复] 使用同步 invoke()，LangGraph 的 astream_events 会在独立线程中执行此函数，
-        避免与事件循环竞争，比 async ainvoke() 在多轮工具调用场景下快约1分钟。
+        [性能修复 v2] 改回 async + ainvoke()，原因同上。
         """
         messages = state["messages"]
         system_msg = SystemMessage(content=custom_system_prompt)
-        response = llm_with_tools.invoke([system_msg] + messages)
+        response = await llm_with_tools.ainvoke([system_msg] + messages)
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
@@ -560,12 +561,18 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
     try:
         yield {"type": "thinking", "content": "正在思考..."}
 
-        # [性能修复] 直接使用 astream_events，去掉无效的 _stream_with_timeout 嵌套包装
-        # 原包装名为"超时保护"但实际未加 asyncio.wait_for，只增加了异步生成器层级导致变慢
+        # [性能修复 v2] 直接使用 astream_events + 每轮超时检查
+        # - 去掉了无效的 _stream_with_timeout 嵌套包装（该包装名为超时保护但实际未加 wait_for）
+        # - 在每轮事件循环中检查总耗时，超过 AGENT_STREAM_TIMEOUT 则抛 TimeoutError
+        # - 配合 async think() + ainvoke()，流式事件直接在事件循环中触发，不走跨线程转发
         async for event in agent.astream_events(
             {"messages": all_messages, "retry_count": 0},
             version="v2",
         ):
+            # [BUG FIX] 整体超时保护：每个事件都检查总耗时
+            if time.time() - start_time > AGENT_STREAM_TIMEOUT:
+                raise asyncio.TimeoutError()
+
             kind = event["event"]
 
             if kind == "on_chat_model_stream":
