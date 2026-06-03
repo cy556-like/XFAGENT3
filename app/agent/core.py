@@ -185,11 +185,16 @@ def create_agent_graph(web_search: bool = False):
     llm_with_tools = llm.bind_tools(tools)
     system_prompt = _inject_current_date(SYSTEM_PROMPT_WITH_WEB_SEARCH if web_search else SYSTEM_PROMPT)
 
-    def think(state: AgentState):
-        """LLM 思考：分析用户问题，决定是否调用工具"""
+    async def think(state: AgentState):
+        """LLM 思考：分析用户问题，决定是否调用工具（异步，避免阻塞事件循环）
+        
+        [BUG FIX] 原先使用同步 invoke() 会阻塞 asyncio 事件循环，
+        当 LLM API 响应慢或超时时，整个服务器无响应，需要 Ctrl+C 才能恢复。
+        改为 async + ainvoke() 后，即使 LLM API 慢也不会阻塞其他请求。
+        """
         messages = state["messages"]
         system_msg = SystemMessage(content=system_prompt)
-        response = llm_with_tools.invoke([system_msg] + messages)
+        response = await llm_with_tools.ainvoke([system_msg] + messages)
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
@@ -381,10 +386,15 @@ def get_agent_with_prompt(custom_system_prompt: str, web_search: bool = False):
     tools = get_tools(web_search=web_search)
     llm_with_tools = llm.bind_tools(tools)
 
-    def think(state: AgentState):
+    async def think(state: AgentState):
+        """LLM 思考（异步，避免阻塞事件循环）
+        
+        [BUG FIX] 原先使用同步 invoke() 会阻塞 asyncio 事件循环，
+        改为 async + ainvoke() 后，即使 LLM API 慢也不会阻塞其他请求。
+        """
         messages = state["messages"]
         system_msg = SystemMessage(content=custom_system_prompt)
-        response = llm_with_tools.invoke([system_msg] + messages)
+        response = await llm_with_tools.ainvoke([system_msg] + messages)
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
@@ -501,6 +511,10 @@ def _extract_content(chunk) -> str:
         return ''.join(text_parts)
     return ''
 
+# [BUG FIX] 整体超时保护：Agent 对话最大允许时长（秒）
+# 超过此时间强制结束，避免 LLM API 挂起导致服务器无响应需 Ctrl+C
+AGENT_STREAM_TIMEOUT = 180  # 3分钟
+
 async def chat_stream_generator(user_input: str, session_id: str = "default", web_search: bool = False, mode: str = "agent", deep_think: bool = False, agent_id: str = None, agent_task: str = None) -> AsyncGenerator[dict, None]:
     """流式对话：逐token输出，同时显示工具调用进度
     
@@ -508,6 +522,11 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
     - 意图路由：简单问题自动走Chat模式，跳过Agent工具循环
     - 流式首Token：使用 astream_events v2 实现毫秒级首Token输出
     - 非流式回退：流式失败时自动回退到非流式，确保总能得到回复
+    
+    BUG FIX：
+    - 添加整体超时保护，防止 LLM API 挂起导致服务器无响应
+    - 确保 tool_done 和 done 事件总是发送，避免前端工具标签一直转圈
+    - 跟踪已启动的工具，异常时自动发送未完成的 tool_done 事件
     """
     set_current_agent_id(agent_id)
     set_current_session_id(session_id)
@@ -535,58 +554,114 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
 
     full_response = ""
     start_time = time.time()
+    
+    # [BUG FIX] 跟踪已启动但未完成的工具，异常时自动发送 tool_done
+    pending_tools = {}  # tool_name -> display_name
 
     try:
         yield {"type": "thinking", "content": "正在思考..."}
 
-        async for event in agent.astream_events(
-            {"messages": all_messages, "retry_count": 0},
-            version="v2",
-        ):
-            kind = event["event"]
+        # [BUG FIX] 使用 asyncio.wait_for 添加整体超时保护
+        # 防止 LLM API 挂起导致 astream_events 永远不结束
+        async def _stream_with_timeout():
+            nonlocal full_response
+            async for event in agent.astream_events(
+                {"messages": all_messages, "retry_count": 0},
+                version="v2",
+            ):
+                kind = event["event"]
 
-            if kind == "on_chat_model_stream":
-                chunk = event["data"]["chunk"]
-                content = _extract_content(chunk)
-                if content:
-                    full_response += content
-                    yield {"type": "token", "content": content}
+                if kind == "on_chat_model_stream":
+                    chunk = event["data"]["chunk"]
+                    content = _extract_content(chunk)
+                    if content:
+                        full_response += content
+                        yield {"type": "token", "content": content}
 
-            elif kind == "on_tool_start":
-                tool_name = event.get("name", "")
-                display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
-                yield {"type": "tool", "name": tool_name, "display": display_name}
+                elif kind == "on_tool_start":
+                    tool_name = event.get("name", "")
+                    display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+                    pending_tools[tool_name] = display_name  # [BUG FIX] 跟踪未完成工具
+                    yield {"type": "tool", "name": tool_name, "display": display_name}
 
-            elif kind == "on_tool_end":
-                tool_name = event.get("name", "")
-                display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
-                yield {"type": "tool_done", "name": tool_name, "display": display_name}
+                elif kind == "on_tool_end":
+                    tool_name = event.get("name", "")
+                    display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+                    pending_tools.pop(tool_name, None)  # [BUG FIX] 标记工具已完成
+                    yield {"type": "tool_done", "name": tool_name, "display": display_name}
+                
+                # [BUG FIX] 处理工具执行出错的情况：on_tool_end 可能不会触发
+                elif kind == "on_tool_error":
+                    tool_name = event.get("name", "")
+                    display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+                    pending_tools.pop(tool_name, None)  # 标记工具已完成（出错也算完成）
+                    yield {"type": "tool_done", "name": tool_name, "display": display_name}
+
+        async for chunk in _stream_with_timeout():
+            yield chunk
 
     except asyncio.TimeoutError:
-        yield {"type": "error", "content": "请求超时，LLM服务响应过慢，请稍后重试"}
+        # [BUG FIX] 超时时：发送未完成工具的 tool_done + error + done
+        logger.warning(f"Agent 流式输出超时（{AGENT_STREAM_TIMEOUT}s），强制结束")
+        for tool_name, display_name in pending_tools.items():
+            yield {"type": "tool_done", "name": tool_name, "display": display_name}
+        pending_tools.clear()
+        yield {"type": "error", "content": f"请求超时（{AGENT_STREAM_TIMEOUT}秒），LLM服务响应过慢，请稍后重试"}
+        # 确保保存已有的部分回复
+        if full_response:
+            try:
+                history.add_message(HumanMessage(content=user_input))
+                history.add_message(AIMessage(content=full_response))
+            except Exception:
+                pass
+        yield {"type": "done"}
+        return
+    except asyncio.CancelledError:
+        # [BUG FIX] SSE 客户端断开时：发送未完成工具的 tool_done + done
+        logger.info(f"Agent 流式输出被取消（客户端断开）")
+        for tool_name, display_name in pending_tools.items():
+            yield {"type": "tool_done", "name": tool_name, "display": display_name}
+        pending_tools.clear()
+        yield {"type": "done"}
         return
     except Exception as e:
         logger.error(f"Agent 流式输出异常: {e}", exc_info=True)
+        # [BUG FIX] 异常时：先发送未完成工具的 tool_done
+        for tool_name, display_name in pending_tools.items():
+            yield {"type": "tool_done", "name": tool_name, "display": display_name}
+        pending_tools.clear()
         # 检测401认证错误，自动切换备用Key
         if _check_and_switch_to_backup(e):
             yield {"type": "error", "content": "主API Key已失效，已自动切换到备用Key，请重新提问"}
+            yield {"type": "done"}
             return
         try:
-            result = await agent.ainvoke({"messages": all_messages, "retry_count": 0})
+            result = await asyncio.wait_for(
+                agent.ainvoke({"messages": all_messages, "retry_count": 0}),
+                timeout=60.0  # [BUG FIX] 非流式回退也加超时
+            )
             ai_message = result["messages"][-1]
             full_response = ai_message.content or ""
             if full_response:
                 for i in range(0, len(full_response), 3):
                     yield {"type": "token", "content": full_response[i:i+3]}
                     await asyncio.sleep(0.02)
+        except asyncio.TimeoutError:
+            yield {"type": "error", "content": "非流式回退也超时，请稍后重试"}
+            yield {"type": "done"}
+            return
         except Exception as e2:
             yield {"type": "error", "content": f"处理失败: {str(e2)}"}
+            yield {"type": "done"}
             return
 
     # 流式输出为空时回退到非流式
     if not full_response:
         try:
-            result = await agent.ainvoke({"messages": all_messages, "retry_count": 0})
+            result = await asyncio.wait_for(
+                agent.ainvoke({"messages": all_messages, "retry_count": 0}),
+                timeout=60.0  # [BUG FIX] 非流式回退也加超时
+            )
             ai_message = result["messages"][-1]
             full_response = ai_message.content or ""
             if full_response:
@@ -595,6 +670,8 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
                     await asyncio.sleep(0.02)
             else:
                 yield {"type": "error", "content": "未能获取到回复，请重试"}
+        except asyncio.TimeoutError:
+            yield {"type": "error", "content": "获取回复超时，请稍后重试"}
         except Exception as e3:
             yield {"type": "error", "content": f"处理失败: {str(e3)}"}
 
@@ -607,7 +684,7 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
             pass
 
     elapsed = time.time() - start_time
-    tool_rounds = sum(1 for m in result.get("messages", all_messages) if isinstance(m, ToolMessage)) if 'result' in dir() else sum(1 for m in all_messages if isinstance(m, ToolMessage))
+    tool_rounds = sum(1 for m in all_messages if isinstance(m, ToolMessage))
     logger.info(f"Agent 对话完成 | 耗时={elapsed:.2f}s | 模型={settings.LLM_MODEL} | 工具轮数={tool_rounds}")
 
     yield {"type": "done"}

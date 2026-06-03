@@ -1342,16 +1342,37 @@ async function streamChat(url, options, bubble) {
 
     function addToolTag(display, isDone) {
         removeThinking();
-        const tag = document.createElement('span');
+        // [BUG FIX] 当 isDone=true 时，找到已有的 running 标签并更新状态，
+        // 而不是创建新标签。原代码总是创建新标签，导致工具完成时出现重复：
+        // "搜索文档(spinner) ✓ 搜索文档" 而不是 "✓ 搜索文档"
         if (isDone) {
+            // 查找已有的 running 状态的同名工具标签
+            const runningTags = bubble.querySelectorAll('.tool-tag.running');
+            for (const existingTag of runningTags) {
+                // 提取标签中的工具名称文本（去除 spinner/icon 部分）
+                const tagText = existingTag.textContent.trim();
+                if (tagText === display || tagText.includes(display)) {
+                    // 找到匹配的 running 标签，更新为 done 状态
+                    existingTag.className = 'tool-tag done';
+                    existingTag.innerHTML = `<span class="tool-icon">✓</span> ${escapeHtml(display)}`;
+                    smartScrollToBottom();
+                    return;  // 更新完成，不创建新标签
+                }
+            }
+            // 如果没找到匹配的 running 标签（异常情况），仍创建新标签
+            const tag = document.createElement('span');
             tag.className = 'tool-tag done';
             tag.innerHTML = `<span class="tool-icon">✓</span> ${escapeHtml(display)}`;
+            bubble.appendChild(tag);
+            bubble.appendChild(document.createTextNode(' '));
         } else {
+            // isDone=false：创建新的 running 标签
+            const tag = document.createElement('span');
             tag.className = 'tool-tag running';
             tag.innerHTML = `<span class="tool-spinner"></span> ${escapeHtml(display)}`;
+            bubble.appendChild(tag);
+            bubble.appendChild(document.createTextNode(' '));
         }
-        bubble.appendChild(tag);
-        bubble.appendChild(document.createTextNode(' '));
         smartScrollToBottom();
     }
 
