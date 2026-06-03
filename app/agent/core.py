@@ -185,17 +185,18 @@ def create_agent_graph(web_search: bool = False):
     llm_with_tools = llm.bind_tools(tools)
     system_prompt = _inject_current_date(SYSTEM_PROMPT_WITH_WEB_SEARCH if web_search else SYSTEM_PROMPT)
 
-    async def think(state: AgentState):
-        """LLM 思考：分析用户问题，决定是否调用工具（异步）
+    def think(state: AgentState):
+        """LLM 思考：分析用户问题，决定是否调用工具
         
-        [性能修复 v2] 改回 async + ainvoke()，原因：
-        - sync invoke() 在线程中执行时，on_chat_model_stream 事件跨线程转发会延迟/丢失
-        - 导致 full_response 为空，触发 fallback 重新执行整个 Agent（等于做两遍，2x变慢）
-        - async ainvoke() 在事件循环中直接触发流式事件，token逐个输出，无需 fallback
+        [性能修复 v3] 使用同步 invoke()：
+        - invoke() 在独立线程执行，不与 astream_events 的事件循环竞争
+        - 多轮工具调用场景（think→tool→think→tool），async ainvoke() 每轮多 3-5s 事件循环竞争
+        - 3轮工具调用累计多 9-15s，这就是比 XF4 慢 10+ 秒的根因
+        - 之前认为 sync 导致 stream 事件丢失，实际是 prompt 优化导致工具循环（已修复）
         """
         messages = state["messages"]
         system_msg = SystemMessage(content=system_prompt)
-        response = await llm_with_tools.ainvoke([system_msg] + messages)
+        response = llm_with_tools.invoke([system_msg] + messages)
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
@@ -317,10 +318,9 @@ def _build_agent_prompt(agent_task: str, web_search: bool = False) -> str:
         preserved_section = base_prompt[tools_idx:]
         result = custom_header + preserved_section
         
-        old_general_rule = """### 通用问题处理规则
-- 用户提出编程、知识问答、写作、翻译等通用问题时，**直接用自己的知识回答**，不要拒绝
-- 不要说"这不是我的服务范围"、"我只处理企业事务"之类的话
-- 回答通用问题时，依然保持专业、清晰的风格"""
+        old_general_rule = """### 通用问题处理
+- 编程、知识问答、写作、翻译等通用问题，**直接用自己的知识回答**，不要拒绝
+- 不要说"这不是我的服务范围"——回答时依然保持专业、清晰"""
         
         new_general_rule = """### 通用问题处理规则
 - **与你的专业领域相关的问题**（如质量体系、公司制度、流程规范等）：必须先检索知识库，详见上方「知识库优先规则」
@@ -387,14 +387,14 @@ def get_agent_with_prompt(custom_system_prompt: str, web_search: bool = False):
     tools = get_tools(web_search=web_search)
     llm_with_tools = llm.bind_tools(tools)
 
-    async def think(state: AgentState):
-        """LLM 思考：分析用户问题，决定是否调用工具（异步）
+    def think(state: AgentState):
+        """LLM 思考：分析用户问题，决定是否调用工具
         
-        [性能修复 v2] 改回 async + ainvoke()，原因同上。
+        [性能修复 v3] 同上，使用同步 invoke() 避免事件循环竞争。
         """
         messages = state["messages"]
         system_msg = SystemMessage(content=custom_system_prompt)
-        response = await llm_with_tools.ainvoke([system_msg] + messages)
+        response = llm_with_tools.invoke([system_msg] + messages)
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
