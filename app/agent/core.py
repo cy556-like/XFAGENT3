@@ -185,16 +185,15 @@ def create_agent_graph(web_search: bool = False):
     llm_with_tools = llm.bind_tools(tools)
     system_prompt = _inject_current_date(SYSTEM_PROMPT_WITH_WEB_SEARCH if web_search else SYSTEM_PROMPT)
 
-    async def think(state: AgentState):
-        """LLM 思考：分析用户问题，决定是否调用工具（异步，避免阻塞事件循环）
+    def think(state: AgentState):
+        """LLM 思考：分析用户问题，决定是否调用工具
         
-        [BUG FIX] 原先使用同步 invoke() 会阻塞 asyncio 事件循环，
-        当 LLM API 响应慢或超时时，整个服务器无响应，需要 Ctrl+C 才能恢复。
-        改为 async + ainvoke() 后，即使 LLM API 慢也不会阻塞其他请求。
+        [性能修复] 使用同步 invoke()，LangGraph 的 astream_events 会在独立线程中执行此函数，
+        避免与事件循环竞争，比 async ainvoke() 在多轮工具调用场景下快约1分钟。
         """
         messages = state["messages"]
         system_msg = SystemMessage(content=system_prompt)
-        response = await llm_with_tools.ainvoke([system_msg] + messages)
+        response = llm_with_tools.invoke([system_msg] + messages)
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
@@ -386,15 +385,15 @@ def get_agent_with_prompt(custom_system_prompt: str, web_search: bool = False):
     tools = get_tools(web_search=web_search)
     llm_with_tools = llm.bind_tools(tools)
 
-    async def think(state: AgentState):
-        """LLM 思考（异步，避免阻塞事件循环）
+    def think(state: AgentState):
+        """LLM 思考：分析用户问题，决定是否调用工具
         
-        [BUG FIX] 原先使用同步 invoke() 会阻塞 asyncio 事件循环，
-        改为 async + ainvoke() 后，即使 LLM API 慢也不会阻塞其他请求。
+        [性能修复] 使用同步 invoke()，LangGraph 的 astream_events 会在独立线程中执行此函数，
+        避免与事件循环竞争，比 async ainvoke() 在多轮工具调用场景下快约1分钟。
         """
         messages = state["messages"]
         system_msg = SystemMessage(content=custom_system_prompt)
-        response = await llm_with_tools.ainvoke([system_msg] + messages)
+        response = llm_with_tools.invoke([system_msg] + messages)
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
@@ -561,44 +560,39 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
     try:
         yield {"type": "thinking", "content": "正在思考..."}
 
-        # [BUG FIX] 使用 asyncio.wait_for 添加整体超时保护
-        # 防止 LLM API 挂起导致 astream_events 永远不结束
-        async def _stream_with_timeout():
-            nonlocal full_response
-            async for event in agent.astream_events(
-                {"messages": all_messages, "retry_count": 0},
-                version="v2",
-            ):
-                kind = event["event"]
+        # [性能修复] 直接使用 astream_events，去掉无效的 _stream_with_timeout 嵌套包装
+        # 原包装名为"超时保护"但实际未加 asyncio.wait_for，只增加了异步生成器层级导致变慢
+        async for event in agent.astream_events(
+            {"messages": all_messages, "retry_count": 0},
+            version="v2",
+        ):
+            kind = event["event"]
 
-                if kind == "on_chat_model_stream":
-                    chunk = event["data"]["chunk"]
-                    content = _extract_content(chunk)
-                    if content:
-                        full_response += content
-                        yield {"type": "token", "content": content}
+            if kind == "on_chat_model_stream":
+                chunk = event["data"]["chunk"]
+                content = _extract_content(chunk)
+                if content:
+                    full_response += content
+                    yield {"type": "token", "content": content}
 
-                elif kind == "on_tool_start":
-                    tool_name = event.get("name", "")
-                    display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
-                    pending_tools[tool_name] = display_name  # [BUG FIX] 跟踪未完成工具
-                    yield {"type": "tool", "name": tool_name, "display": display_name}
+            elif kind == "on_tool_start":
+                tool_name = event.get("name", "")
+                display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+                pending_tools[tool_name] = display_name  # [BUG FIX] 跟踪未完成工具
+                yield {"type": "tool", "name": tool_name, "display": display_name}
 
-                elif kind == "on_tool_end":
-                    tool_name = event.get("name", "")
-                    display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
-                    pending_tools.pop(tool_name, None)  # [BUG FIX] 标记工具已完成
-                    yield {"type": "tool_done", "name": tool_name, "display": display_name}
-                
-                # [BUG FIX] 处理工具执行出错的情况：on_tool_end 可能不会触发
-                elif kind == "on_tool_error":
-                    tool_name = event.get("name", "")
-                    display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
-                    pending_tools.pop(tool_name, None)  # 标记工具已完成（出错也算完成）
-                    yield {"type": "tool_done", "name": tool_name, "display": display_name}
-
-        async for chunk in _stream_with_timeout():
-            yield chunk
+            elif kind == "on_tool_end":
+                tool_name = event.get("name", "")
+                display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+                pending_tools.pop(tool_name, None)  # [BUG FIX] 标记工具已完成
+                yield {"type": "tool_done", "name": tool_name, "display": display_name}
+            
+            # [BUG FIX] 处理工具执行出错的情况：on_tool_end 可能不会触发
+            elif kind == "on_tool_error":
+                tool_name = event.get("name", "")
+                display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+                pending_tools.pop(tool_name, None)  # 标记工具已完成（出错也算完成）
+                yield {"type": "tool_done", "name": tool_name, "display": display_name}
 
     except asyncio.TimeoutError:
         # [BUG FIX] 超时时：发送未完成工具的 tool_done + error + done
