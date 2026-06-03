@@ -287,6 +287,29 @@ def create_app() -> FastAPI:
                     except Exception:
                         pass
                     
+                    # [性能修复] 4. 刷新用户聊天列表缓存（防抖写入中未持久化的数据）
+                    try:
+                        from app.memory.manager import flush_user_chats_cache
+                        flush_user_chats_cache()
+                    except Exception as e:
+                        logger.warning(f"[定期清理] 聊天缓存flush失败: {e}")
+                    
+                    # [性能修复] 5. 刷新统计数据缓存（防抖写入中未持久化的数据）
+                    try:
+                        from app.utils.stats import flush_stats
+                        flush_stats()
+                    except Exception as e:
+                        logger.warning(f"[定期清理] 统计缓存flush失败: {e}")
+                    
+                    # [性能修复] 6. 触发垃圾回收，释放长时间运行中累积的内存碎片
+                    try:
+                        import gc
+                        collected = gc.collect()
+                        if collected > 0:
+                            logger.info(f"[定期清理] GC回收了 {collected} 个对象")
+                    except Exception:
+                        pass
+                    
                 except asyncio.CancelledError:
                     break
                 except Exception as e:

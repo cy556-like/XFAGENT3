@@ -607,7 +607,8 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
             pass
 
     elapsed = time.time() - start_time
-    logger.info(f"Agent 对话完成 | 耗时={elapsed:.2f}s | 模型={settings.LLM_MODEL} | 工具轮数={sum(1 for m in all_messages if isinstance(m, ToolMessage))}")
+    tool_rounds = sum(1 for m in result.get("messages", all_messages) if isinstance(m, ToolMessage)) if 'result' in dir() else sum(1 for m in all_messages if isinstance(m, ToolMessage))
+    logger.info(f"Agent 对话完成 | 耗时={elapsed:.2f}s | 模型={settings.LLM_MODEL} | 工具轮数={tool_rounds}")
 
     yield {"type": "done"}
 
@@ -631,7 +632,9 @@ async def _chat_mode_stream(user_input: str, session_id: str = "default", deep_t
             yield {"type": "thinking", "content": "正在联网搜索..."}
             yield {"type": "tool", "name": "web_search_tool", "display": "联网搜索"}
             from app.agent.tools import web_search_tool
-            search_result = web_search_tool.invoke(user_input)
+            # [性能修复] 使用 asyncio.to_thread 在线程池中执行同步HTTP调用，避免阻塞事件循环
+            # 原代码直接调用 web_search_tool.invoke() 最多阻塞15秒，期间整个服务器无法处理任何请求
+            search_result = await asyncio.to_thread(web_search_tool.invoke, user_input)
             yield {"type": "tool_done", "name": "web_search_tool", "display": "联网搜索"}
             search_context = f"\n\n【联网搜索结果】\n{search_result}\n\n请根据以上联网搜索结果回答用户问题。如果搜索结果没有相关信息，请根据自身知识回答。"
         except Exception as e:

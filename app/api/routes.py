@@ -54,6 +54,9 @@ _request_stats = {
 }
 _request_stats_lock = threading.Lock()
 
+# [性能修复] 端点统计上限，避免长时间运行后内存无限增长
+_MAX_ENDPOINT_STATS = 50
+
 
 def _record_request(path: str, duration: float, is_error: bool = False):
     """记录请求统计（线程安全）"""
@@ -69,6 +72,11 @@ def _record_request(path: str, duration: float, is_error: bool = False):
         
         # 端点统计
         if path not in _request_stats["endpoint_stats"]:
+            # [性能修复] 超过上限时淘汰请求量最少的端点
+            if len(_request_stats["endpoint_stats"]) >= _MAX_ENDPOINT_STATS:
+                min_path = min(_request_stats["endpoint_stats"], 
+                              key=lambda k: _request_stats["endpoint_stats"][k]["count"])
+                del _request_stats["endpoint_stats"][min_path]
             _request_stats["endpoint_stats"][path] = {"count": 0, "avg_time": 0.0, "errors": 0}
         ep = _request_stats["endpoint_stats"][path]
         ep["count"] += 1

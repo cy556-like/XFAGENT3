@@ -39,6 +39,10 @@ class FileBasedHistory(BaseChatMessageHistory):
     基于文件的对话历史存储
     每个会话保存为一个 JSON 文件
     重启后历史不会丢失
+    
+    [性能修复] 写入防抖：add_message() 不再每次都写磁盘，而是延迟2秒批量写入
+    长对话中每次 add_message 都全量序列化+写磁盘，随消息数增加越来越慢
+    改为防抖写入：2秒内的多次 add_message 只触发一次磁盘写入
     """
 
     def __init__(self, session_id: str):
@@ -47,6 +51,8 @@ class FileBasedHistory(BaseChatMessageHistory):
         self._file_path = os.path.join(
             settings.DATA_DIR, "conversations", f"{session_id}.json"
         )
+        self._dirty = False
+        self._save_timer = None
         self._load_from_file()
 
     def _load_from_file(self):
@@ -72,6 +78,33 @@ class FileBasedHistory(BaseChatMessageHistory):
             data.append({"role": role, "content": msg.content})
         with open(self._file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        self._dirty = False
+
+    def _schedule_save(self):
+        """防抖写入：2秒内的多次 add_message 只触发一次磁盘写入"""
+        self._dirty = True
+        if self._save_timer is not None:
+            self._save_timer.cancel()
+        import threading
+        self._save_timer = threading.Timer(2.0, self._flush_save)
+        self._save_timer.daemon = True
+        self._save_timer.start()
+
+    def _flush_save(self):
+        """执行实际的磁盘写入"""
+        if self._dirty:
+            try:
+                self._save_to_file()
+            except Exception as e:
+                logger.warning(f"会话 {self._session_id} 保存失败: {e}")
+
+    def flush(self):
+        """强制将待写入的数据刷到磁盘（会话清理时调用）"""
+        if self._save_timer is not None:
+            self._save_timer.cancel()
+            self._save_timer = None
+        if self._dirty:
+            self._save_to_file()
 
     @property
     def messages(self) -> list[BaseMessage]:
@@ -79,10 +112,14 @@ class FileBasedHistory(BaseChatMessageHistory):
 
     def add_message(self, message: BaseMessage) -> None:
         self._messages.append(message)
-        self._save_to_file()
+        self._schedule_save()  # [性能修复] 防抖写入替代每次写磁盘
 
     def clear(self) -> None:
         self._messages = []
+        self._dirty = False
+        if self._save_timer is not None:
+            self._save_timer.cancel()
+            self._save_timer = None
         if os.path.exists(self._file_path):
             os.remove(self._file_path)
 
@@ -165,6 +202,8 @@ def cleanup_idle_sessions() -> int:
     定期调用此函数，将超过 SESSION_MAX_IDLE_SECONDS 未访问的会话从内存中移除。
     下次访问时自动从文件重新加载。
     
+    [性能修复] 清理前先flush脏数据，防止防抖写入中的数据丢失
+    
     Returns:
         int: 被清理的会话数量
     """
@@ -175,6 +214,13 @@ def cleanup_idle_sessions() -> int:
             to_remove.append(sid)
     
     for sid in to_remove:
+        history, _ = _session_store[sid]
+        # [性能修复] 清理前先flush，确保防抖写入中未持久化的数据不丢失
+        if hasattr(history, 'flush'):
+            try:
+                history.flush()
+            except Exception:
+                pass
         del _session_store[sid]
     
     if to_remove:
@@ -302,8 +348,17 @@ def rename_chat(username: str, chat_id: str, new_title: str) -> bool:
     return True
 
 
+# [性能修复] 用户聊天列表写入防抖：避免每条消息都触发磁盘读写
+# 缓存：username -> (chats_data, last_save_time, dirty_flag)
+_user_chats_cache: dict = {}
+_USER_CHATS_SAVE_INTERVAL = 5.0  # 至少间隔5秒才写一次磁盘
+
+
 def update_chat_time(username: str, chat_id: str) -> None:
-    """更新会话的更新时间（发送消息时调用）"""
+    """更新会话的更新时间（发送消息时调用）
+    
+    [性能修复] 使用内存缓存+防抖写入，避免每条消息都读写磁盘
+    """
     chats = _load_user_chats(username)
     for chat in chats:
         if chat["chat_id"] == chat_id:
@@ -319,4 +374,31 @@ def update_chat_time(username: str, chat_id: str) -> None:
                         chat["title"] = title
                         break
             break
-    _save_user_chats(username, chats)
+    
+    # [性能修复] 防抖写入：检查距上次写入是否超过间隔
+    now = time.time()
+    cache_entry = _user_chats_cache.get(username)
+    if cache_entry is None:
+        # 首次写入，直接写
+        _save_user_chats(username, chats)
+        _user_chats_cache[username] = (chats, now, False)
+    else:
+        _, last_save, _ = cache_entry
+        if now - last_save >= _USER_CHATS_SAVE_INTERVAL:
+            # 超过间隔，立即写入
+            _save_user_chats(username, chats)
+            _user_chats_cache[username] = (chats, now, False)
+        else:
+            # 未超过间隔，仅更新缓存，标记脏数据
+            _user_chats_cache[username] = (chats, last_save, True)
+
+
+def flush_user_chats_cache():
+    """将所有脏缓存刷到磁盘（定期清理时调用）"""
+    for username, (chats, last_save, dirty) in _user_chats_cache.items():
+        if dirty:
+            try:
+                _save_user_chats(username, chats)
+                _user_chats_cache[username] = (chats, time.time(), False)
+            except Exception as e:
+                logger.warning(f"flush用户聊天缓存失败 [{username}]: {e}")
