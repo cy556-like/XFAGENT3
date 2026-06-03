@@ -1305,6 +1305,21 @@ function createStreamingBubble() {
     return bubble;
 }
 
+// 统一重置流式 UI 状态，防止按钮灰色/工具标签转圈等残留
+function resetStreamingUI() {
+    const sendBtn = document.getElementById('sendBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    if (sendBtn) {
+        sendBtn.disabled = false;
+        sendBtn.style.display = '';
+    }
+    if (stopBtn) {
+        stopBtn.style.display = 'none';
+    }
+    isLoading = false;
+    currentAbortController = null;
+}
+
 async function streamChat(url, options, bubble) {
     let fullText = '';
     let cursorEl = null;
@@ -1485,9 +1500,7 @@ async function streamChat(url, options, bubble) {
             bubble.innerHTML = `<span style="color:var(--error)">网络错误，请重试</span>`;
         }
     } finally {
-        currentAbortController = null;
-        document.getElementById('sendBtn').style.display = '';
-        document.getElementById('stopBtn').style.display = 'none';
+        resetStreamingUI();
     }
 }
 
@@ -1601,8 +1614,10 @@ async function sendMessage() {
     const message = input.value.trim();
     if (!message && !selectedFile) return;
     isLoading = true;
-    document.getElementById('sendBtn').disabled = true;
+    const sendBtn = document.getElementById('sendBtn');
+    sendBtn.disabled = true;
 
+    try {
     document.getElementById('chatContent').classList.remove('centered');
 
     if (selectedFile && message) {
@@ -1670,9 +1685,10 @@ async function sendMessage() {
         }, bubble);
         await loadChatList();
     }
-    isLoading = false;
-    document.getElementById('sendBtn').disabled = false;
     scrollToBottom();
+    } finally {
+        resetStreamingUI();
+    }
 }
 
 function sendQuick(text) { document.getElementById('msgInput').value = text; sendMessage(); }
@@ -1743,15 +1759,19 @@ async function regenerateMessage(btn) {
     messageDiv.remove();
     if (!currentChatId) return;
     isLoading = true;
-    document.getElementById('sendBtn').disabled = true;
+    const sendBtn = document.getElementById('sendBtn');
+    sendBtn.disabled = true;
+
+    try {
     const bubble = createStreamingBubble();
     await streamChat('/api/v1/chat/stream', {
         method: 'POST',
         headers: apiHeaders(),
         body: JSON.stringify({ message: userText, session_id: currentChatId, web_search: webSearchEnabled, mode: currentMode, deep_think: deepThinkEnabled, agent_id: currentAgentId || '', agent_task: (currentAgentId && myAgents.find(a => a.id === currentAgentId)) ? myAgents.find(a => a.id === currentAgentId).task : '' })
     }, bubble);
-    isLoading = false;
-    document.getElementById('sendBtn').disabled = false;
+    } finally {
+        resetStreamingUI();
+    }
 }
 
 function showTyping(show) { document.getElementById('typingIndicator').style.display = show ? 'block' : 'none'; if (show) scrollToBottom(); }

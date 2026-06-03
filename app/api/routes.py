@@ -283,6 +283,10 @@ async def chat_stream_api(req: ChatRequest, request: Request, username: str = De
         except asyncio.CancelledError:
             logger.info(f"SSE流被取消: session={req.session_id}")
             return
+        except Exception as e:
+            logger.exception(f"SSE流异常: session={req.session_id}")
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
         # 更新会话时间
         try:
             parts = req.session_id.split("_", 1)
@@ -366,6 +370,10 @@ async def chat_with_file_stream(
                     yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             except asyncio.CancelledError:
                 return
+            except Exception as e:
+                logger.exception(f"SSE流异常(图片模式): session={session_id}")
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
             try:
                 parts = session_id.split("_", 1)
                 if len(parts) == 2:
@@ -447,6 +455,10 @@ async def chat_with_file_stream(
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
         except asyncio.CancelledError:
             return
+        except Exception as e:
+            logger.exception(f"SSE流异常(文档模式): session={session_id}")
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
         try:
             parts = session_id.split("_", 1)
             if len(parts) == 2:
