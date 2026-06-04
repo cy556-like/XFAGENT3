@@ -32,6 +32,9 @@ async def _sse_stream_wrapper(generator_factory, request: Request, session_id: s
     
     当客户端断开时，cancel producer_task 可真正终止 Agent 执行。
     generator_factory: 无参数的 async generator 工厂函数，如 lambda: chat_stream_generator(...)
+    
+    [v6 优化] 去掉内层 create_task + sleep 轮询，改用 asyncio.wait_for(queue.get, timeout=0.5)
+    避免每个 SSE 连接每次消费创建 throwaway task + 50ms 忙等待
     """
     queue = asyncio.Queue()
     stream_done = object()
@@ -59,21 +62,23 @@ async def _sse_stream_wrapper(generator_factory, request: Request, session_id: s
     
     try:
         while True:
-            get_task = asyncio.create_task(queue.get())
-            while not get_task.done():
-                if await request.is_disconnected():
-                    cancelled_by_client = True
-                    logger.info(f"SSE客户端断开，正在取消Agent执行: session={session_id}")
-                    get_task.cancel()
-                    producer_task.cancel()
-                    try:
-                        await asyncio.shield(producer_task)
-                    except asyncio.CancelledError:
-                        pass
-                    return
-                await asyncio.sleep(0.05)
+            # [v6 优化] 直接 await queue.get() + 超时检测断开，不创建中间 task
+            if await request.is_disconnected():
+                cancelled_by_client = True
+                logger.info(f"SSE客户端断开，正在取消Agent执行: session={session_id}")
+                producer_task.cancel()
+                try:
+                    await asyncio.shield(producer_task)
+                except asyncio.CancelledError:
+                    pass
+                return
             
-            chunk = await get_task
+            try:
+                chunk = await asyncio.wait_for(queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                # 超时后回到循环顶部检查 disconnect
+                continue
+            
             if chunk is stream_done:
                 break
             if isinstance(chunk, dict) and chunk.get('type') == 'error':
@@ -321,7 +326,9 @@ async def chat_api(req: ChatRequest, username: str = Depends(get_current_user)):
     start = time.time()
     is_error = False
     try:
-        response = chat(req.message, req.session_id, web_search=req.web_search, mode=req.mode, deep_think=req.deep_think, agent_id=req.agent_id, agent_task=req.agent_task)
+        # [BUG FIX v6] chat() 是同步阻塞函数（内部 llm.invoke / agent.invoke），
+        # 必须用 asyncio.to_thread 放到线程池，否则阻塞整个事件循环导致所有请求卡死
+        response = await asyncio.to_thread(chat, req.message, req.session_id, web_search=req.web_search, mode=req.mode, deep_think=req.deep_think, agent_id=req.agent_id, agent_task=req.agent_task)
         # 更新会话时间
         try:
             parts = req.session_id.split("_", 1)
