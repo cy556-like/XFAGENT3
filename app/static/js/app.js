@@ -1358,6 +1358,36 @@ function cleanupExcessMessages() {
     }
 }
 
+    // [性能修复] 前端内存清理：页面长时间打开后定期清理
+function cleanupFrontendMemory() {
+    // 1. 清理过多的DOM消息节点
+    cleanupExcessMessages();
+    
+    // 2. 清理已完成的 AbortController 引用
+    if (currentAbortController && currentAbortController.signal.aborted) {
+        currentAbortController = null;
+    }
+    
+    // 3. 清理 thinkingInterval（如果残留）
+    if (thinkingInterval && !isLoading) {
+        clearInterval(thinkingInterval);
+        thinkingInterval = null;
+    }
+    
+    // 4. 清理 Blob URL（浏览器不会自动释放）
+    try {
+        document.querySelectorAll('a[href^="blob:"]').forEach(a => {
+            // 只清理已下载过的（有download属性的）
+            if (a.download) {
+                try { URL.revokeObjectURL(a.href); } catch(e) {}
+            }
+        });
+    } catch(e) {}
+}
+
+// [性能修复] 每5分钟自动执行一次前端内存清理，防止长时间打开页面变慢
+setInterval(cleanupFrontendMemory, 5 * 60 * 1000);
+
 async function streamChat(url, options, bubble) {
     let fullText = '';
     let cursorEl = null;
@@ -1557,17 +1587,25 @@ function renderBubbleMarkdown(bubble, text) {
 }
 
 function injectDownloadButtons(container) {
+    // [修复] 更宽泛的导出链接匹配：支持 /export-download/ 和 /export/download/ 两种格式
+    // LLM有时会输出 /export/download/ 而不是正确的 /export-download/
+    const EXPORT_URL_PATTERN = /\/api\/v1\/documents\/export[-/]download\/[^ \n\)<"\u0060]+\.(docx|xlsx|pdf|txt)/;
+    const EXPORT_URL_GLOBAL = /(?:\/api\/v1\/documents\/export[-/]download\/[^ \n\)<"\u0060]+\.(docx|xlsx|pdf|txt))/g;
+    const btnLabels = { docx: '点击下载Word文档', xlsx: '点击下载Excel表格', pdf: '点击下载PDF文档', txt: '点击下载文本文件' };
+
     // 1. 先处理 <a> 标签中的导出链接（marked渲染的markdown链接 [xxx](/api/v1/...)）
-    const existingLinks = container.querySelectorAll('a[href*="/api/v1/documents/export-download/"]');
+    const existingLinks = container.querySelectorAll('a[href*="/api/v1/documents/export"]');
     existingLinks.forEach(a => {
         const href = a.getAttribute('href') || '';
+        if (!EXPORT_URL_PATTERN.test(href)) return;
         const ext = href.split('.').pop().toLowerCase();
         if (!['docx', 'xlsx', 'pdf', 'txt'].includes(ext)) return;
-        const btnLabels = { docx: '点击下载Word文档', xlsx: '点击下载Excel表格', pdf: '点击下载PDF文档', txt: '点击下载文本文件' };
+        // 修正URL格式：如果是 /export/download/ 改为 /export-download/
+        const correctUrl = href.replace('/export/download/', '/export-download/');
         a.className = 'doc-download-btn' + (ext === 'xlsx' ? ' xlsx-btn' : '');
         a.href = 'javascript:void(0)';
         a.textContent = btnLabels[ext] || '点击下载文档';
-        a.onclick = function(e) { e.preventDefault(); downloadExportFile(href); };
+        a.onclick = function(e) { e.preventDefault(); downloadExportFile(correctUrl); };
     });
 
     // 2. 再处理文本节点中的导出链接（LLM直接输出URL文本）
@@ -1575,22 +1613,23 @@ function injectDownloadButtons(container) {
     const nodesToReplace = [];
     while (walker.nextNode()) {
         const node = walker.currentNode;
-        if (node.nodeValue && /\/api\/v1\/documents\/export-download\/[^ \n\)<"\u0060]+\.(docx|xlsx|pdf|txt)/.test(node.nodeValue)) {
+        if (node.nodeValue && EXPORT_URL_PATTERN.test(node.nodeValue)) {
             nodesToReplace.push(node);
         }
     }
     nodesToReplace.forEach(node => {
         const text = node.nodeValue;
-        const urlMatch = text.match(/(\/api\/v1\/documents\/export-download\/[^ \n\)<"\u0060]+\.(docx|xlsx|pdf|txt))/);
+        const urlMatch = text.match(EXPORT_URL_PATTERN);
         if (urlMatch) {
-            const url = urlMatch[1];
-            const btn = document.createElement('a');
+            const url = urlMatch[0];
+            // 修正URL格式
+            const correctUrl = url.replace('/export/download/', '/export-download/');
             const ext = url.split('.').pop().toLowerCase();
-            const btnLabels = { docx: '点击下载Word文档', xlsx: '点击下载Excel表格', pdf: '点击下载PDF文档', txt: '点击下载文本文件' };
+            const btn = document.createElement('a');
             btn.className = 'doc-download-btn' + (ext === 'xlsx' ? ' xlsx-btn' : '');
             btn.href = 'javascript:void(0)';
             btn.textContent = btnLabels[ext] || '点击下载文档';
-            btn.onclick = function() { downloadExportFile(url); };
+            btn.onclick = function() { downloadExportFile(correctUrl); };
             const parent = node.parentNode;
             const beforeText = text.substring(0, text.indexOf(url)).replace(/下载链接[：:]*\s*$/, '');
             if (beforeText.trim()) {
@@ -1604,6 +1643,25 @@ function injectDownloadButtons(container) {
             parent.removeChild(node);
         }
     });
+
+    // [修复] 3. 兜底检查：扫描整个容器的 innerHTML，如果仍有未转换的导出链接文本，强制替换
+    // 某些情况下 marked 会把 URL 包裹在特殊元素中，TreeWalker 可能遗漏
+    const html = container.innerHTML;
+    if (EXPORT_URL_PATTERN.test(html)) {
+        // 检查是否已经有下载按钮（避免重复处理）
+        const hasBtn = container.querySelector('.doc-download-btn');
+        if (!hasBtn) {
+            // 最后手段：直接在 innerHTML 中替换文本链接为 HTML 按钮
+            let newHtml = html.replace(EXPORT_URL_GLOBAL, function(match) {
+                const correctUrl = match.replace('/export/download/', '/export-download/');
+                const ext = match.split('.').pop().toLowerCase();
+                const label = btnLabels[ext] || '点击下载文档';
+                const btnClass = 'doc-download-btn' + (ext === 'xlsx' ? ' xlsx-btn' : '');
+                return `<a class="${btnClass}" href="javascript:void(0)" onclick="downloadExportFile('${correctUrl}')">${label}</a>`;
+            });
+            container.innerHTML = newHtml;
+        }
+    }
 }
 
 // ===== 导出文件下载（支持中文文件名） =====
@@ -2271,6 +2329,10 @@ document.addEventListener('DOMContentLoaded', async function() {
     document.addEventListener('visibilitychange', async function() {
         if (!document.hidden && currentUser && authToken) {
             await syncAgentsFromServer();
+        }
+        // [性能修复] 页面隐藏时清理内存，防止长时间打开页面变慢
+        if (document.hidden) {
+            cleanupFrontendMemory();
         }
     });
 

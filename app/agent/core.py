@@ -253,6 +253,36 @@ def reset_agent():
     _agent_graph = None
     _llm_cache.clear()  # [优化1] 模型切换时清空 LLM 缓存
     _agent_prompt_graph_cache.clear()  # [优化2] 清空 Agent Graph 缓存
+    _agent_prompt_graph_timestamps.clear()  # 清空缓存时间戳
+
+
+def cleanup_stale_caches():
+    """[性能修复] 定期清理过期的缓存，防止长时间运行后内存增长
+    
+    由 main.py 的定期清理任务每10分钟调用一次。
+    清理内容：
+    1. 超过30分钟未使用的 Agent Graph 缓存
+    2. 超过1小时未使用的 LLM Client 缓存（TCP连接会被服务端关闭，缓存的连接已无效）
+    """
+    _cleanup_stale_graph_cache()
+    
+    # [性能修复] 清理长时间未使用的 LLM Client 缓存
+    # ChatOpenAI 实例内部持有 httpx 连接池，长时间不用会占用文件描述符
+    # 只保留当前活跃模型的客户端
+    global _llm_cache
+    if len(_llm_cache) > 2:
+        # 保留当前模型的缓存，清理其他
+        current_key = None
+        for key in _llm_cache:
+            model, api_key, base_url, temp = key
+            if model == settings.LLM_MODEL:
+                current_key = key
+                break
+        if current_key and current_key in _llm_cache:
+            kept = {current_key: _llm_cache[current_key]}
+            _llm_cache.clear()
+            _llm_cache.update(kept)
+            logger.info(f"[缓存清理] LLM Client 缓存清理完成，保留当前模型，清理前={len(_llm_cache)+1 if current_key else 0}，清理后=1")
 
 # [性能修复] Agent Graph 缓存过期检查：超过30分钟未使用的缓存自动清理
 _AGENT_GRAPH_CACHE_TTL = 1800  # 30分钟

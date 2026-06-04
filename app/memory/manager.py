@@ -30,8 +30,16 @@ logger = logging.getLogger(__name__)
 MAX_SESSION_STORE_SIZE = 200
 
 # 会话最大空闲时间（秒），超过此时间未访问的会话从内存移除
-# 2小时 = 7200秒
-SESSION_MAX_IDLE_SECONDS = 7200
+# [性能修复] 从2小时缩短到30分钟：长时间打开但未操作的会话不应占用内存
+SESSION_MAX_IDLE_SECONDS = 1800
+
+# [性能修复] 单个会话最大消息数量，超过时淘汰最早的消息
+# 防止长时间运行后消息无限增长导致内存膨胀和序列化变慢
+MAX_MESSAGES_PER_SESSION = 200
+
+# [性能修复] 单条消息最大字符数，超过时截断
+# 工具输出（搜索结果、文档内容）可能非常长，存入历史会导致内存和序列化开销
+MAX_MESSAGE_LENGTH = 5000
 
 
 class FileBasedHistory(BaseChatMessageHistory):
@@ -75,7 +83,11 @@ class FileBasedHistory(BaseChatMessageHistory):
         data = []
         for msg in self._messages:
             role = "user" if isinstance(msg, HumanMessage) else "assistant"
-            data.append({"role": role, "content": msg.content})
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            # [性能修复] 写入文件时也截断过长内容，防止JSON文件膨胀
+            if len(content) > MAX_MESSAGE_LENGTH:
+                content = content[:MAX_MESSAGE_LENGTH] + f"\n\n[...内容过长已截断，原文{len(content)}字]"
+            data.append({"role": role, "content": content})
         with open(self._file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         self._dirty = False
@@ -111,7 +123,24 @@ class FileBasedHistory(BaseChatMessageHistory):
         return self._messages
 
     def add_message(self, message: BaseMessage) -> None:
+        # [性能修复] 截断过长的消息内容，防止工具输出占满内存
+        content = message.content
+        if isinstance(content, str) and len(content) > MAX_MESSAGE_LENGTH:
+            truncated = content[:MAX_MESSAGE_LENGTH]
+            truncated += f"\n\n[...内容过长已截断，原文{len(content)}字，保留前{MAX_MESSAGE_LENGTH}字]"
+            if isinstance(message, HumanMessage):
+                message = HumanMessage(content=truncated)
+            elif isinstance(message, AIMessage):
+                message = AIMessage(content=truncated)
+            else:
+                message = message.__class__(content=truncated)
+        
         self._messages.append(message)
+        
+        # [性能修复] 超过最大消息数量时，淘汰最早的消息
+        while len(self._messages) > MAX_MESSAGES_PER_SESSION:
+            self._messages.pop(0)
+        
         self._schedule_save()  # [性能修复] 防抖写入替代每次写磁盘
 
     def clear(self) -> None:

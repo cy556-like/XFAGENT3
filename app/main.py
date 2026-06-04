@@ -233,14 +233,17 @@ def create_app() -> FastAPI:
         import asyncio
         
         async def _periodic_cleanup():
-            """每10分钟执行一次清理：
+            """每5分钟执行一次清理：
             1. 清理长时间未访问的会话（释放内存）
             2. 清理过期的导出文件（释放磁盘）
             3. 清理请求统计中的旧端点数据
+            4. 清理LLM/Agent缓存
+            5. 清理工具缓存
+            6. GC垃圾回收
             """
             while True:
                 try:
-                    await asyncio.sleep(600)  # 10分钟执行一次
+                    await asyncio.sleep(300)  # [性能修复] 5分钟执行一次（原10分钟太慢）
                     if _shutdown_requested:
                         break
                     
@@ -307,6 +310,23 @@ def create_app() -> FastAPI:
                         collected = gc.collect()
                         if collected > 0:
                             logger.info(f"[定期清理] GC回收了 {collected} 个对象")
+                    except Exception:
+                        pass
+                    
+                    # [性能修复] 7. 清理 LLM Client 和 Agent Graph 缓存
+                    try:
+                        from app.agent.core import cleanup_stale_caches
+                        cleanup_stale_caches()
+                    except Exception as e:
+                        logger.warning(f"[定期清理] Agent缓存清理失败: {e}")
+                    
+                    # [性能修复] 8. 清理工具缓存（长时间运行后缓存可能很大）
+                    try:
+                        from app.agent.tools import _tool_cache
+                        cache_stats = _tool_cache.stats()
+                        if cache_stats["size"] > 80:  # 缓存超过80条时清理
+                            _tool_cache.clear()
+                            logger.info(f"[定期清理] 工具缓存已清理（清理前: {cache_stats['size']}条）")
                     except Exception:
                         pass
                     
