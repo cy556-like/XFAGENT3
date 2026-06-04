@@ -16,7 +16,7 @@ load_dotenv()
 # 可用的 LLM 模型列表
 AVAILABLE_MODELS = [
     # DeepSeek 系列（火山引擎）
-    {"id": "DeepSeek-V4-pro", "name": "DeepSeek-V4-Pro", "desc": "DeepSeek旗舰，128K上下文"},
+    {"id": "ep-20260604175402-5665h", "name": "DeepSeek-V4-Pro", "desc": "DeepSeek旗舰，128K上下文"},
     # GLM-5 系列（最新）
     {"id": "glm-5.1", "name": "GLM-5.1", "desc": "最新旗舰，Coding对齐Claude Opus 4.6"},
     {"id": "glm-5-turbo", "name": "GLM-5-Turbo", "desc": "高智能基座，Agent能力SOTA"},
@@ -45,7 +45,7 @@ DEFAULT_VISION_MODEL = "glm-4v-plus"
 FAST_MODELS = {"glm-4-flash", "glm-4-air", "glm-4-air-0111", "glm-4.7-flash"}
 
 # DeepSeek 模型列表（走火山引擎API）
-DEEPSEEK_MODELS = {"DeepSeek-V4-pro"}
+DEEPSEEK_MODELS = {"ep-20260604175402-5665h"}
 
 
 class Settings:
