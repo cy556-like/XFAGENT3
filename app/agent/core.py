@@ -35,14 +35,48 @@ from app.memory.manager import get_session_history
 
 logger = logging.getLogger(__name__)
 
-# [BUG FIX] 会话取消信号：当用户终止对话时，通过 contextvars 传递取消标志给 think()
-# 解决同步 invoke() 在独立线程中无法被异步取消、导致"幽灵"LLM调用继续消耗 rate limit 的问题
-# contextvars 自动从 asyncio 任务传播到 ThreadPoolExecutor 子线程
-_cancel_ctx: contextvars.ContextVar = contextvars.ContextVar('cancel_event', default=None)
+# [BUG FIX v6] 会话取消信号：全局 dict 按 session_id 追踪取消状态
+# v5 用 contextvars.ContextVar 有两个致命缺陷：
+# 1. 跨 HTTP 请求隔离 → 新请求看不到旧请求的 cancel_event → 无法取消幽灵任务
+# 2. CancelledError handler 从未调用 cancel_event.set() → _is_session_cancelled() 永远返回 False
+# v6 改用全局 dict + threading.Lock + session_id 索引，并在取消时真正 set 事件
+_session_cancel_events: dict[str, threading.Event] = {}
+_session_cancel_lock = threading.Lock()
 
-def _is_session_cancelled() -> bool:
-    """检查当前 session 是否已被取消（在 think() 中调用以避免无效 LLM 调用）"""
-    evt = _cancel_ctx.get(None)
+def _get_or_create_cancel_event(session_id: str) -> threading.Event:
+    """为 session 获取或创建取消事件，同时取消同一 session 的上一个事件"""
+    with _session_cancel_lock:
+        old = _session_cancel_events.pop(session_id, None)
+        if old is not None:
+            old.set()  # 取消同一 session 的上一个幽灵任务
+            logger.info(f"[取消追踪] 已取消 session={session_id} 的上一个 Agent 任务")
+        evt = threading.Event()
+        _session_cancel_events[session_id] = evt
+        return evt
+
+def _set_session_cancelled(session_id: str):
+    """标记 session 已取消，阻止 think() 发起新的 LLM 调用"""
+    with _session_cancel_lock:
+        evt = _session_cancel_events.get(session_id)
+        if evt is not None:
+            evt.set()
+
+def _cleanup_session_cancel(session_id: str):
+    """正常结束时清理取消事件"""
+    with _session_cancel_lock:
+        _session_cancel_events.pop(session_id, None)
+
+def _is_session_cancelled(session_id: str = None) -> bool:
+    """检查当前 session 是否已被取消（在 think() 中调用以避免无效 LLM 调用）
+    
+    通过 get_current_session_id() 获取 session_id，在 ThreadPoolExecutor 子线程中也能正确获取
+    （contextvars 自动传播到子线程）
+    """
+    sid = session_id or get_current_session_id()
+    if not sid:
+        return False
+    with _session_cancel_lock:
+        evt = _session_cancel_events.get(sid)
     if evt is not None and evt.is_set():
         return True
     return False
@@ -256,8 +290,7 @@ def create_agent_graph(web_search: bool = False):
         - 3轮工具调用累计多 9-15s，这就是比 XF4 慢 10+ 秒的根因
         - 之前认为 sync 导致 stream 事件丢失，实际是 prompt 优化导致工具循环（已修复）
         
-        [BUG FIX] 取消检查：用户终止对话时，通过 contextvars 传递的取消信号
-        会阻止新一轮 think() 发起 LLM 调用，避免"幽灵"调用消耗 rate limit
+        [BUG FIX v6] 取消检查：通过全局 dict + session_id 检测取消信号
         """
         if _is_session_cancelled():
             logger.warning("检测到会话已取消，跳过 LLM 调用")
@@ -506,8 +539,7 @@ def get_agent_with_prompt(custom_system_prompt: str, web_search: bool = False):
         
         [性能修复 v3] 同上，使用同步 invoke() 避免事件循环竞争。
         
-        [BUG FIX] 取消检查：用户终止对话时，通过 contextvars 传递的取消信号
-        会阻止新一轮 think() 发起 LLM 调用，避免"幽灵"调用消耗 rate limit
+        [BUG FIX v6] 取消检查：通过全局 dict + session_id 检测取消信号
         """
         if _is_session_cancelled():
             logger.warning("检测到会话已取消，跳过 LLM 调用（自定义智能体）")
@@ -655,18 +687,8 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
     set_current_session_id(session_id)
     reset_search_count()  # 每轮新对话重置搜索计数
     
-    # [BUG FIX v5] 为每次对话创建独立的取消信号
-    cancel_event = threading.Event()
-    
-    # [BUG FIX v5] 取消同一 session 上一个还在执行的 Agent 任务
-    # 解决用户终止对话后立即开启新对话时，上一个"幽灵"任务仍在消耗 LLM rate limit 的问题
-    previous_event = _cancel_ctx.get(None)
-    if previous_event is not None:
-        previous_event.set()
-        logger.info(f"[取消追踪] 标记上一个 Agent 任务为已取消: session={session_id}")
-    
-    # [BUG FIX v5] 将当前对话的取消信号注入 context，自动传播到子线程
-    token = _cancel_ctx.set(cancel_event)
+    # [BUG FIX v6] 获取或创建 session 级取消事件（自动取消上一个幽灵任务）
+    cancel_event = _get_or_create_cancel_event(session_id)
     
     # 性能优化：意图路由 - 简单问题走Chat模式（跳过Agent循环，减少3-5秒延迟）
     if mode == "agent" and _is_simple_query(user_input) and not web_search:
@@ -676,6 +698,7 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
     if mode == "chat":
         async for chunk in _chat_mode_stream(user_input, session_id, deep_think=deep_think, web_search=web_search, agent_id=agent_id, agent_task=agent_task):
             yield chunk
+        _cleanup_session_cancel(session_id)  # [v6] 正常结束清理
         return
 
     # Agent模式：走Agent工具调用
@@ -738,8 +761,9 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
                 yield {"type": "tool_done", "name": tool_name, "display": display_name}
 
     except asyncio.TimeoutError:
-        # [BUG FIX] 超时时：发送未完成工具的 tool_done + error + done
-        logger.warning(f"Agent 流式输出超时（{AGENT_STREAM_TIMEOUT}s），强制结束")
+        # [BUG FIX v6] 超时时：设置取消信号 + 清理 + error + done
+        _set_session_cancelled(session_id)
+        logger.warning(f"Agent 流式输出超时（{AGENT_STREAM_TIMEOUT}s），强制结束，已标记 session={session_id} 为取消")
         for tool_name, display_name in pending_tools.items():
             yield {"type": "tool_done", "name": tool_name, "display": display_name}
         pending_tools.clear()
@@ -752,16 +776,21 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
             except Exception:
                 pass
         yield {"type": "done"}
+        _cleanup_session_cancel(session_id)
         return
     except asyncio.CancelledError:
-        # [BUG FIX] SSE 客户端断开时：发送未完成工具的 tool_done + done
-        logger.info(f"Agent 流式输出被取消（客户端断开）")
+        # [BUG FIX v6] 取消时：设置取消信号 → think() 的下一轮会跳过 LLM 调用
+        _set_session_cancelled(session_id)
+        logger.info(f"Agent 流式输出被取消（客户端断开），已标记 session={session_id} 为取消")
         for tool_name, display_name in pending_tools.items():
             yield {"type": "tool_done", "name": tool_name, "display": display_name}
         pending_tools.clear()
         yield {"type": "done"}
+        _cleanup_session_cancel(session_id)
         return
     except Exception as e:
+        # [BUG FIX v6] 异常时也设置取消信号，避免后续 think() 继续浪费调用
+        _set_session_cancelled(session_id)
         logger.error(f"Agent 流式输出异常: {e}", exc_info=True)
         # [BUG FIX] 异常时：先发送未完成工具的 tool_done
         for tool_name, display_name in pending_tools.items():
@@ -771,6 +800,7 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
         if _check_and_switch_to_backup(e):
             yield {"type": "error", "content": "主API Key已失效，已自动切换到备用Key，请重新提问"}
             yield {"type": "done"}
+            _cleanup_session_cancel(session_id)
             return
         try:
             result = await asyncio.wait_for(
@@ -825,6 +855,7 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
     logger.info(f"Agent 对话完成 | 耗时={elapsed:.2f}s | 模型={settings.LLM_MODEL} | 工具轮数={tool_rounds}")
 
     yield {"type": "done"}
+    _cleanup_session_cancel(session_id)  # [v6] 正常结束清理
 
 async def _chat_mode_stream(user_input: str, session_id: str = "default", deep_think: bool = False, web_search: bool = False, agent_id: str = None, agent_task: str = None) -> AsyncGenerator[dict, None]:
     """Chat模式：直接LLM流式对话，不经过Agent工具调用，可选联网搜索
