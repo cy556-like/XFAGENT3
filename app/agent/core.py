@@ -134,15 +134,29 @@ def _is_simple_query(query: str) -> bool:
     return False
 
 def _inject_current_date(system_prompt: str) -> str:
-    """在系统提示词中注入当前日期，避免LLM回复错误的时间信息
+    """[Prompt Caching] 返回原始 prompt，日期不再注入 system prompt。
     
-    在提示词末尾追加当前日期，让LLM知道现在是什么时间，
-    避免在引用变更记录、描述事件时间时使用错误的年份。
-    同时添加禁止编造日期的规则。
+    之前日期注入 system prompt 尾部导致前缀每天变化，破坏 API 端 prompt caching。
+    现改为在消息列表中插入独立的日期消息，system prompt 前缀保持 100% 稳定。
+    """
+    return system_prompt
+
+
+def _get_date_message() -> HumanMessage:
+    """获取当前日期消息（独立于 system prompt，不破坏前缀缓存）"""
+    now = datetime.now()
+    return HumanMessage(content=f"[系统信息：当前日期 {now.strftime('%Y年%m月%d日')}，星期{['一','二','三','四','五','六','日'][now.weekday()]}。回答中涉及时间的请使用此日期，严禁编造。]")
+
+
+def _get_date_message() -> HumanMessage:
+    """[Prompt Caching 优化] 将日期信息作为独立消息而非注入 system prompt
+    
+    这样 system prompt 前缀 100% 稳定不变，OpenAI/兼容 API 的自动 prompt 
+    caching 可以复用前缀计算，首 token 延迟降低 50-85%。
     """
     now = datetime.now()
-    date_info = f"\n\n## 当前时间（重要！必须遵守）\n当前日期：{now.strftime('%Y年%m月%d日')}，星期{['一','二','三','四','五','六','日'][now.weekday()]}。请在回答中涉及时间信息时使用正确的当前日期。**严禁**编造、猜测或使用错误的年份和日期。当知识库文档中没有明确标注日期时，**不要**自行添加\"XX年变更记录\"之类的日期描述，只需说\"根据知识库文档记载\"。"
-    return system_prompt + date_info
+    date_text = f"[当前日期：{now.strftime('%Y年%m月%d日')}，星期{['一','二','三','四','五','六','日'][now.weekday()]}。请在回答中涉及时间信息时使用正确的当前日期，严禁编造日期。]"
+    return HumanMessage(content=date_text)
 
 # ===== 1. 定义 Agent 状态 =====
 class AgentState(TypedDict):
@@ -296,7 +310,9 @@ def create_agent_graph(web_search: bool = False):
     llm = create_llm()
     tools = get_tools(web_search=web_search)
     llm_with_tools = llm.bind_tools(tools)
-    system_prompt = _inject_current_date(SYSTEM_PROMPT_WITH_WEB_SEARCH if web_search else SYSTEM_PROMPT)
+    system_prompt = SYSTEM_PROMPT_WITH_WEB_SEARCH if web_search else SYSTEM_PROMPT
+    # [Prompt Caching] 不在 system prompt 尾部注入日期（会破坏前缀缓存）
+    # 改为在消息中插入日期条，system prompt 前缀 100% 稳定
 
     async def think(state: AgentState):
         """LLM 思考：分析用户问题，决定是否调用工具
@@ -313,7 +329,9 @@ def create_agent_graph(web_search: bool = False):
             raise RuntimeError("Session cancelled by user")
         messages = state["messages"]
         system_msg = SystemMessage(content=system_prompt)
-        response = await llm_with_tools.ainvoke([system_msg] + messages)
+        # [Prompt Caching] 日期独立消息，system prompt 前缀保持稳定
+        date_msg = _get_date_message()
+        response = await llm_with_tools.ainvoke([system_msg, date_msg] + messages)
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
@@ -553,7 +571,9 @@ def get_agent_with_prompt(custom_system_prompt: str, web_search: bool = False):
             raise RuntimeError("Session cancelled by user")
         messages = state["messages"]
         system_msg = SystemMessage(content=custom_system_prompt)
-        response = await llm_with_tools.ainvoke([system_msg] + messages)
+        # [Prompt Caching] 日期独立消息
+        date_msg = _get_date_message()
+        response = await llm_with_tools.ainvoke([system_msg, date_msg] + messages)
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
@@ -896,7 +916,7 @@ async def _chat_mode_stream(user_input: str, session_id: str = "default", deep_t
             search_context = f"\n\n【联网搜索失败：{str(e)}】请根据自身知识回答。"
     
     enhanced_input = user_input + search_context
-    all_messages = recent_messages + [HumanMessage(content=enhanced_input)]
+    all_messages = recent_messages + [_get_date_message(), HumanMessage(content=enhanced_input)]
 
     full_response = ""
 
@@ -958,7 +978,7 @@ async def chat_stream_generator_multimodal(multimodal_content: list, session_id:
     try:
         yield {"type": "thinking", "content": f"正在分析图片（使用{use_model}）..."}
 
-        async for chunk in llm.astream([SystemMessage(content=system_prompt)] + all_messages):
+        async for chunk in llm.astream([SystemMessage(content=system_prompt), _get_date_message()] + all_messages):
             content = _extract_content(chunk)
             if content:
                 full_response += content
