@@ -381,6 +381,8 @@ def rename_chat(username: str, chat_id: str, new_title: str) -> bool:
 # 缓存：username -> (chats_data, last_save_time, dirty_flag)
 _user_chats_cache: dict = {}
 _USER_CHATS_SAVE_INTERVAL = 5.0  # 至少间隔5秒才写一次磁盘
+import threading as _threading
+_user_chats_cache_lock = _threading.Lock()  # [BUG FIX] 防止并发写入导致数据丢失
 
 
 def update_chat_time(username: str, chat_id: str) -> None:
@@ -406,28 +408,27 @@ def update_chat_time(username: str, chat_id: str) -> None:
     
     # [性能修复] 防抖写入：检查距上次写入是否超过间隔
     now = time.time()
-    cache_entry = _user_chats_cache.get(username)
-    if cache_entry is None:
-        # 首次写入，直接写
-        _save_user_chats(username, chats)
-        _user_chats_cache[username] = (chats, now, False)
-    else:
-        _, last_save, _ = cache_entry
-        if now - last_save >= _USER_CHATS_SAVE_INTERVAL:
-            # 超过间隔，立即写入
+    with _user_chats_cache_lock:  # [BUG FIX] 加锁防止并发写入
+        cache_entry = _user_chats_cache.get(username)
+        if cache_entry is None:
             _save_user_chats(username, chats)
             _user_chats_cache[username] = (chats, now, False)
         else:
-            # 未超过间隔，仅更新缓存，标记脏数据
-            _user_chats_cache[username] = (chats, last_save, True)
+            _, last_save, _ = cache_entry
+            if now - last_save >= _USER_CHATS_SAVE_INTERVAL:
+                _save_user_chats(username, chats)
+                _user_chats_cache[username] = (chats, now, False)
+            else:
+                _user_chats_cache[username] = (chats, last_save, True)
 
 
 def flush_user_chats_cache():
     """将所有脏缓存刷到磁盘（定期清理时调用）"""
-    for username, (chats, last_save, dirty) in _user_chats_cache.items():
-        if dirty:
-            try:
-                _save_user_chats(username, chats)
-                _user_chats_cache[username] = (chats, time.time(), False)
-            except Exception as e:
-                logger.warning(f"flush用户聊天缓存失败 [{username}]: {e}")
+    with _user_chats_cache_lock:  # [BUG FIX] 加锁防止并发
+        for username, (chats, last_save, dirty) in _user_chats_cache.items():
+            if dirty:
+                try:
+                    _save_user_chats(username, chats)
+                    _user_chats_cache[username] = (chats, time.time(), False)
+                except Exception as e:
+                    logger.warning(f"flush用户聊天缓存失败 [{username}]: {e}")
