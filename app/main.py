@@ -340,9 +340,18 @@ def create_app() -> FastAPI:
                     try:
                         from app.agent.tools import _tool_cache
                         cache_stats = _tool_cache.stats()
-                        if cache_stats["size"] > 80:  # 缓存超过80条时清理
-                            _tool_cache.clear()
-                            logger.info(f"[定期清理] 工具缓存已清理（清理前: {cache_stats['size']}条）")
+                        if cache_stats["size"] > 80:  # 缓存超过80条时，只淘汰过期条目
+                            # [v8] 只清除过期条目，保留有效缓存，避免清空后重复搜索拖慢响应
+                            now = time.time()
+                            expired_count = 0
+                            for key in list(_tool_cache._cache.keys()):
+                                entry = _tool_cache._cache.get(key)
+                                if entry and now > entry.get("expire_at", 0):
+                                    del _tool_cache._cache[key]
+                                    _tool_cache._order.pop(key, None)
+                                    expired_count += 1
+                            if expired_count > 0:
+                                logger.info(f"[定期清理] 工具缓存淘汰了 {expired_count} 条过期条目（剩余 {_tool_cache.stats()['size']} 条）")
                     except Exception:
                         pass
                     
