@@ -142,10 +142,10 @@ def _inject_current_date(system_prompt: str) -> str:
     return system_prompt
 
 
-def _get_date_message() -> HumanMessage:
-    """获取当前日期消息（独立于 system prompt，不破坏前缀缓存）"""
+def _get_date_message() -> SystemMessage:
+    """获取当前日期消息（独立 SystemMessage，不破坏 system prompt 前缀缓存）"""
     now = datetime.now()
-    return HumanMessage(content=f"[系统信息：当前日期 {now.strftime('%Y年%m月%d日')}，星期{['一','二','三','四','五','六','日'][now.weekday()]}。回答中涉及时间的请使用此日期，严禁编造。]")
+    return SystemMessage(content=f"[系统信息：当前日期 {now.strftime('%Y年%m月%d日')}，星期{['一','二','三','四','五','六','日'][now.weekday()]}。回答中涉及时间的请使用此日期，严禁编造。]")
 
 
 def _get_date_message() -> HumanMessage:
