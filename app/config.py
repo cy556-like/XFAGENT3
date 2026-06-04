@@ -55,7 +55,7 @@ class Settings:
     # LLM 配置
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
     LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api.xixixixi.cloud/v1")
-    LLM_MODEL: str = os.getenv("LLM_MODEL", "glm-5-turbo")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "ep-20260604180137-8xxll")
 
     # LLM 备用配置（主Key失效时自动切换）
     LLM_API_KEY_BACKUP: str = os.getenv("LLM_API_KEY_BACKUP", "")
