@@ -282,23 +282,22 @@ def create_agent_graph(web_search: bool = False):
     llm_with_tools = llm.bind_tools(tools)
     system_prompt = _inject_current_date(SYSTEM_PROMPT_WITH_WEB_SEARCH if web_search else SYSTEM_PROMPT)
 
-    def think(state: AgentState):
+    async def think(state: AgentState):
         """LLM 思考：分析用户问题，决定是否调用工具
         
-        [性能修复 v3] 使用同步 invoke()：
-        - invoke() 在独立线程执行，不与 astream_events 的事件循环竞争
-        - 多轮工具调用场景（think→tool→think→tool），async ainvoke() 每轮多 3-5s 事件循环竞争
-        - 3轮工具调用累计多 9-15s，这就是比 XF4 慢 10+ 秒的根因
-        - 之前认为 sync 导致 stream 事件丢失，实际是 prompt 优化导致工具循环（已修复）
-        
-        [BUG FIX v6] 取消检查：通过全局 dict + session_id 检测取消信号
+        [BUG FIX v7] 改回 async + ainvoke()：
+        - sync invoke() 在 ThreadPoolExecutor 中执行时，on_chat_model_stream 事件跨线程转发
+        - 长回复（DFMEA 5000+ token）大量流式事件丢失 → full_response 为空
+        - 触发 fallback agent.ainvoke() 重新执行整轮 → 做两遍，60-120s 卡死
+        - async ainvoke() 事件直接在事件循环触发，token逐个输出，不走 fallback
+        - 多轮工具场景每轮多 3-5s 事件循环开销，但远小于 fallback 的 60-120s
         """
         if _is_session_cancelled():
             logger.warning("检测到会话已取消，跳过 LLM 调用")
             raise RuntimeError("Session cancelled by user")
         messages = state["messages"]
         system_msg = SystemMessage(content=system_prompt)
-        response = llm_with_tools.invoke([system_msg] + messages)
+        response = await llm_with_tools.ainvoke([system_msg] + messages)
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
@@ -535,19 +534,17 @@ def get_agent_with_prompt(custom_system_prompt: str, web_search: bool = False):
     tools = get_tools(web_search=web_search)
     llm_with_tools = llm.bind_tools(tools)
 
-    def think(state: AgentState):
+    async def think(state: AgentState):
         """LLM 思考：分析用户问题，决定是否调用工具
         
-        [性能修复 v3] 同上，使用同步 invoke() 避免事件循环竞争。
-        
-        [BUG FIX v6] 取消检查：通过全局 dict + session_id 检测取消信号
+        [BUG FIX v7] 改回 async + ainvoke()，原因同上（长回复流式事件跨线程丢失 → fallback 重复执行）
         """
         if _is_session_cancelled():
             logger.warning("检测到会话已取消，跳过 LLM 调用（自定义智能体）")
             raise RuntimeError("Session cancelled by user")
         messages = state["messages"]
         system_msg = SystemMessage(content=custom_system_prompt)
-        response = llm_with_tools.invoke([system_msg] + messages)
+        response = await llm_with_tools.ainvoke([system_msg] + messages)
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
