@@ -254,6 +254,21 @@ def reset_agent():
     _llm_cache.clear()  # [优化1] 模型切换时清空 LLM 缓存
     _agent_prompt_graph_cache.clear()  # [优化2] 清空 Agent Graph 缓存
 
+# [性能修复] Agent Graph 缓存过期检查：超过30分钟未使用的缓存自动清理
+_AGENT_GRAPH_CACHE_TTL = 1800  # 30分钟
+_agent_prompt_graph_timestamps = {}  # cache_key -> last_access_time
+
+def _cleanup_stale_graph_cache():
+    """清理超过 TTL 未使用的 Agent Graph 缓存，防止长时间运行后内存增长"""
+    now = time.time()
+    stale_keys = [k for k, t in _agent_prompt_graph_timestamps.items() if now - t > _AGENT_GRAPH_CACHE_TTL]
+    for k in stale_keys:
+        if k in _agent_prompt_graph_cache:
+            del _agent_prompt_graph_cache[k]
+        del _agent_prompt_graph_timestamps[k]
+    if stale_keys:
+        logger.info(f"[缓存清理] 清理了 {len(stale_keys)} 个过期 Agent Graph 缓存（>{_AGENT_GRAPH_CACHE_TTL}s未使用）")
+
 def _build_agent_prompt(agent_task: str, web_search: bool = False) -> str:
     """根据智能体的任务描述构建专属系统提示词
     
@@ -381,6 +396,7 @@ def get_agent_with_prompt(custom_system_prompt: str, web_search: bool = False):
     
     if cache_key in _agent_prompt_graph_cache:
         logger.debug(f"Agent Graph 缓存命中: prompt_hash={prompt_hash}, web_search={web_search}")
+        _agent_prompt_graph_timestamps[cache_key] = time.time()  # [性能修复] 更新访问时间
         return _agent_prompt_graph_cache[cache_key]
     
     llm = create_llm()
@@ -434,6 +450,8 @@ def get_agent_with_prompt(custom_system_prompt: str, web_search: bool = False):
         del _agent_prompt_graph_cache[oldest_key]
         logger.debug(f"Agent Graph 缓存已满，淘汰: {oldest_key}")
     _agent_prompt_graph_cache[cache_key] = compiled
+    _agent_prompt_graph_timestamps[cache_key] = time.time()  # [性能修复] 记录缓存时间
+    _cleanup_stale_graph_cache()  # [性能修复] 顺便清理过期缓存
     logger.info(f"Agent Graph 已编译并缓存: prompt_hash={prompt_hash}, web_search={web_search}, 缓存数量={len(_agent_prompt_graph_cache)}")
     
     return compiled

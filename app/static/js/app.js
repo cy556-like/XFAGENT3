@@ -1130,7 +1130,21 @@ async function loadChatHistory(chatId) {
         const data = await resp.json();
         const messages = data.messages || [];
         if (messages.length > 0) {
-            messages.forEach(m => addMessageToUI(m.role, m.content));
+            // [性能修复] 限制加载的消息数量，避免DOM过多导致页面卡顿
+            const MAX_RENDER_MESSAGES = 50;
+            let messagesToRender = messages;
+            let hasOlderMessages = false;
+            if (messages.length > MAX_RENDER_MESSAGES) {
+                hasOlderMessages = true;
+                messagesToRender = messages.slice(-MAX_RENDER_MESSAGES);
+            }
+            if (hasOlderMessages) {
+                const hint = document.createElement('div');
+                hint.className = 'message system';
+                hint.innerHTML = '<div class="bubble" style="text-align:center;color:var(--text-secondary);font-size:13px;">已省略较早的 ' + (messages.length - MAX_RENDER_MESSAGES) + ' 条消息（完整记录已保存）</div>';
+                container.appendChild(hint);
+            }
+            messagesToRender.forEach(m => addMessageToUI(m.role, m.content));
             scrollToBottom();
         }
         updateCenteredMode();
@@ -1318,6 +1332,30 @@ function resetStreamingUI() {
     }
     isLoading = false;
     currentAbortController = null;
+    // [性能修复] 每次对话结束后清理过多的DOM节点，防止长时间运行后页面变慢
+    cleanupExcessMessages();
+}
+
+function cleanupExcessMessages() {
+    // 限制聊天区域DOM节点数量，超过100条消息时移除最早的
+    const container = document.getElementById('chatMessages');
+    if (!container) return;
+    const MAX_DOM_MESSAGES = 100;
+    const messages = container.querySelectorAll('.message');
+    if (messages.length > MAX_DOM_MESSAGES) {
+        const toRemove = messages.length - MAX_DOM_MESSAGES;
+        for (let i = 0; i < toRemove; i++) {
+            messages[i].remove();
+        }
+        // 如果没有省略提示，加一个
+        const existingHint = container.querySelector('.system .bubble');
+        if (!existingHint || !existingHint.textContent.includes('省略')) {
+            const hint = document.createElement('div');
+            hint.className = 'message system';
+            hint.innerHTML = '<div class="bubble" style="text-align:center;color:var(--text-secondary);font-size:13px;">已省略较早的消息（完整记录已保存）</div>';
+            container.insertBefore(hint, container.firstChild);
+        }
+    }
 }
 
 async function streamChat(url, options, bubble) {
@@ -1519,37 +1557,46 @@ function renderBubbleMarkdown(bubble, text) {
 }
 
 function injectDownloadButtons(container) {
-    // 遍历所有文本节点，查找下载链接并替换为按钮
+    // 1. 先处理 <a> 标签中的导出链接（marked渲染的markdown链接 [xxx](/api/v1/...)）
+    const existingLinks = container.querySelectorAll('a[href*="/api/v1/documents/export-download/"]');
+    existingLinks.forEach(a => {
+        const href = a.getAttribute('href') || '';
+        const ext = href.split('.').pop().toLowerCase();
+        if (!['docx', 'xlsx', 'pdf', 'txt'].includes(ext)) return;
+        const btnLabels = { docx: '点击下载Word文档', xlsx: '点击下载Excel表格', pdf: '点击下载PDF文档', txt: '点击下载文本文件' };
+        a.className = 'doc-download-btn' + (ext === 'xlsx' ? ' xlsx-btn' : '');
+        a.href = 'javascript:void(0)';
+        a.textContent = btnLabels[ext] || '点击下载文档';
+        a.onclick = function(e) { e.preventDefault(); downloadExportFile(href); };
+    });
+
+    // 2. 再处理文本节点中的导出链接（LLM直接输出URL文本）
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
     const nodesToReplace = [];
     while (walker.nextNode()) {
         const node = walker.currentNode;
-        if (node.nodeValue && /\/api\/v1\/documents\/export-download\/[^ \n\)<"]+\.(docx|xlsx|pdf|txt)/.test(node.nodeValue)) {
+        if (node.nodeValue && /\/api\/v1\/documents\/export-download\/[^ \n\)<"\u0060]+\.(docx|xlsx|pdf|txt)/.test(node.nodeValue)) {
             nodesToReplace.push(node);
         }
     }
     nodesToReplace.forEach(node => {
         const text = node.nodeValue;
-        const urlMatch = text.match(/(\/api\/v1\/documents\/export-download\/[^ \n\)<"]+\.(docx|xlsx|pdf|txt))/);
+        const urlMatch = text.match(/(\/api\/v1\/documents\/export-download\/[^ \n\)<"\u0060]+\.(docx|xlsx|pdf|txt))/);
         if (urlMatch) {
             const url = urlMatch[1];
             const btn = document.createElement('a');
-            // 根据文件扩展名显示不同的按钮文字和样式
             const ext = url.split('.').pop().toLowerCase();
             const btnLabels = { docx: '点击下载Word文档', xlsx: '点击下载Excel表格', pdf: '点击下载PDF文档', txt: '点击下载文本文件' };
             btn.className = 'doc-download-btn' + (ext === 'xlsx' ? ' xlsx-btn' : '');
             btn.href = 'javascript:void(0)';
             btn.textContent = btnLabels[ext] || '点击下载文档';
             btn.onclick = function() { downloadExportFile(url); };
-            // 替换整个文本节点为按钮
             const parent = node.parentNode;
-            // 保留链接前面的文字
             const beforeText = text.substring(0, text.indexOf(url)).replace(/下载链接[：:]*\s*$/, '');
             if (beforeText.trim()) {
                 parent.insertBefore(document.createTextNode(beforeText), node);
             }
             parent.insertBefore(btn, node);
-            // 保留链接后面的文字
             const afterText = text.substring(text.indexOf(url) + url.length);
             if (afterText.trim()) {
                 parent.insertBefore(document.createTextNode(afterText), node);
