@@ -207,18 +207,18 @@ def create_llm(deep_think: bool = False, fast_mode: bool = False, model_override
     elif deep_think:
         max_tokens = 8192   # 深度思考需要更多输出空间
     else:
-        max_tokens = 4096   # 正常 Agent 模式（合理上限，减少浪费）
+        max_tokens = 6144   # 正常 Agent 模式（DFMEA等复杂任务需要足够空间，不能太低）
     
     # [性能优化] request_timeout 分档：
     # - 短回复 45s（足够且不会让用户等太久）
-    # - 正常 90s（大多数请求在此范围内）
-    # - 深度思考 120s
+    # - 正常 120s（复杂任务如DFMEA需要长时间生成）
+    # - 深度思考 180s
     if short_response:
         request_timeout = 45
     elif deep_think:
-        request_timeout = 120
+        request_timeout = 180
     else:
-        request_timeout = 90
+        request_timeout = 120
 
     # [优化1] 检查缓存，复用已有的 ChatOpenAI 实例
     cache_key = (model, api_key, base_url, temperature)
@@ -240,7 +240,8 @@ def create_llm(deep_think: bool = False, fast_mode: bool = False, model_override
         streaming=True,
         max_tokens=max_tokens,
         request_timeout=request_timeout,
-        max_retries=2,  # [性能优化] openai 内置重试（网络错误自动重试2次，含指数退避）
+        # [重要] 不设置 max_retries，避免超时时指数退避重试放大响应时间
+        # 复杂任务（DFMEA等）LLM生成需要60-120s，重试会导致200-300s的卡死
     )
     _llm_cache[cache_key] = llm
     logger.info(f"LLM Client 已创建并缓存: model={model}, max_tokens={max_tokens}, timeout={request_timeout}s, 缓存数量={len(_llm_cache)}")
