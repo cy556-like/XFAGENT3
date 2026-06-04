@@ -3003,12 +3003,44 @@ def _write_rows_to_xlsx_sheet(wb, rows_data, sheet_index, sheet_name,
                 cell.font = cell_font
                 cell.alignment = cell_alignment
     
-    # Auto-adjust column widths
+    # Auto-adjust column widths (CJK-aware: 中文算2单位，英文算1单位)
+    # [BUG FIX] 原代码用 len() 一个中文和一个英文都算1，导致列宽严重不足
+    def _display_width(s: str) -> int:
+        """计算字符串在 Excel 中的显示宽度（中文≈2，英文≈1）"""
+        w = 0
+        for ch in str(s):
+            if '\u4e00' <= ch <= '\u9fff' or '\u3000' <= ch <= '\u303f' or '\uff00' <= ch <= '\uffef':
+                w += 2
+            else:
+                w += 1
+        return w
+    
+    # [BUG FIX] 自动合并多行表头：第一行宽分类列数 < 第二行子列数时，合并对应单元格
+    if len(rows_data) >= 2 and num_cols > 1:
+        row1_content_cols = sum(1 for c in rows_data[0] if str(c).strip())
+        if row1_content_cols > 0 and row1_content_cols < num_cols:
+            col = 1
+            while col <= num_cols:
+                if col <= len(rows_data[0]) and str(rows_data[0][col - 1]).strip():
+                    start = col
+                    col += 1
+                    while col <= num_cols:
+                        if col > len(rows_data[0]) or not str(rows_data[0][col - 1]).strip():
+                            col += 1
+                        else:
+                            break
+                    end = col - 1
+                    if end > start:
+                        ws.merge_cells(start_row=table_start_row, start_column=start,
+                                       end_row=table_start_row, end_column=end)
+                    start = col
+                col += 1
+    
     for col_idx in range(1, num_cols + 1):
         max_length = 0
         for row in rows_data:
             if col_idx - 1 < len(row):
-                cell_len = len(str(row[col_idx - 1]))
+                cell_len = _display_width(str(row[col_idx - 1]))
                 if cell_len > max_length:
                     max_length = cell_len
         # Also consider info_lines width for columns 1-2
@@ -3016,13 +3048,14 @@ def _write_rows_to_xlsx_sheet(wb, rows_data, sheet_index, sheet_name,
             for text in info_lines:
                 kv_match = re.match(r'^(.+?)[：:]\s*(.+)$', text)
                 if kv_match and col_idx == 1:
-                    max_length = max(max_length, len(kv_match.group(1).strip()))
+                    max_length = max(max_length, _display_width(kv_match.group(1).strip()))
                 elif kv_match and col_idx == 2:
-                    max_length = max(max_length, len(kv_match.group(2).strip()))
+                    max_length = max(max_length, _display_width(kv_match.group(2).strip()))
                 elif col_idx == 1:
-                    max_length = max(max_length, len(text))
-        # Cap at 50, min at 8
-        adjusted_width = min(max(max_length + 2, 8), 50)
+                    max_length = max(max_length, _display_width(text))
+        # [BUG FIX] 宽表场景（>15列）放宽上限到80，避免中文内容挤成一团
+        cap = 80 if num_cols > 15 else 50
+        adjusted_width = min(max(max_length + 3, 8), cap)
         ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = adjusted_width
     
     return sheet_index + 1
