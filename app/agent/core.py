@@ -16,6 +16,8 @@ import asyncio
 import time
 import logging
 import hashlib
+import contextvars
+import threading
 from datetime import datetime
 from typing import Annotated, AsyncGenerator
 from typing_extensions import TypedDict
@@ -32,6 +34,18 @@ from app.agent.prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_WITH_WEB_SEARCH, CHAT
 from app.memory.manager import get_session_history
 
 logger = logging.getLogger(__name__)
+
+# [BUG FIX] 会话取消信号：当用户终止对话时，通过 contextvars 传递取消标志给 think()
+# 解决同步 invoke() 在独立线程中无法被异步取消、导致"幽灵"LLM调用继续消耗 rate limit 的问题
+# contextvars 自动从 asyncio 任务传播到 ThreadPoolExecutor 子线程
+_cancel_ctx: contextvars.ContextVar = contextvars.ContextVar('cancel_event', default=None)
+
+def _is_session_cancelled() -> bool:
+    """检查当前 session 是否已被取消（在 think() 中调用以避免无效 LLM 调用）"""
+    evt = _cancel_ctx.get(None)
+    if evt is not None and evt.is_set():
+        return True
+    return False
 
 # 最大历史消息数量（加速推理，避免上下文过长）
 MAX_HISTORY_MESSAGES = 10
@@ -193,7 +207,13 @@ def create_agent_graph(web_search: bool = False):
         - 多轮工具调用场景（think→tool→think→tool），async ainvoke() 每轮多 3-5s 事件循环竞争
         - 3轮工具调用累计多 9-15s，这就是比 XF4 慢 10+ 秒的根因
         - 之前认为 sync 导致 stream 事件丢失，实际是 prompt 优化导致工具循环（已修复）
+        
+        [BUG FIX] 取消检查：用户终止对话时，通过 contextvars 传递的取消信号
+        会阻止新一轮 think() 发起 LLM 调用，避免"幽灵"调用消耗 rate limit
         """
+        if _is_session_cancelled():
+            logger.warning("检测到会话已取消，跳过 LLM 调用")
+            raise RuntimeError("Session cancelled by user")
         messages = state["messages"]
         system_msg = SystemMessage(content=system_prompt)
         response = llm_with_tools.invoke([system_msg] + messages)
@@ -437,7 +457,13 @@ def get_agent_with_prompt(custom_system_prompt: str, web_search: bool = False):
         """LLM 思考：分析用户问题，决定是否调用工具
         
         [性能修复 v3] 同上，使用同步 invoke() 避免事件循环竞争。
+        
+        [BUG FIX] 取消检查：用户终止对话时，通过 contextvars 传递的取消信号
+        会阻止新一轮 think() 发起 LLM 调用，避免"幽灵"调用消耗 rate limit
         """
+        if _is_session_cancelled():
+            logger.warning("检测到会话已取消，跳过 LLM 调用（自定义智能体）")
+            raise RuntimeError("Session cancelled by user")
         messages = state["messages"]
         system_msg = SystemMessage(content=custom_system_prompt)
         response = llm_with_tools.invoke([system_msg] + messages)
@@ -575,10 +601,24 @@ async def chat_stream_generator(user_input: str, session_id: str = "default", we
     - 添加整体超时保护，防止 LLM API 挂起导致服务器无响应
     - 确保 tool_done 和 done 事件总是发送，避免前端工具标签一直转圈
     - 跟踪已启动的工具，异常时自动发送未完成的 tool_done 事件
+    - [v5] 会话级取消追踪：终止对话时真正取消 Agent 执行，不再只是停止消费事件
     """
     set_current_agent_id(agent_id)
     set_current_session_id(session_id)
     reset_search_count()  # 每轮新对话重置搜索计数
+    
+    # [BUG FIX v5] 为每次对话创建独立的取消信号
+    cancel_event = threading.Event()
+    
+    # [BUG FIX v5] 取消同一 session 上一个还在执行的 Agent 任务
+    # 解决用户终止对话后立即开启新对话时，上一个"幽灵"任务仍在消耗 LLM rate limit 的问题
+    previous_event = _cancel_ctx.get(None)
+    if previous_event is not None:
+        previous_event.set()
+        logger.info(f"[取消追踪] 标记上一个 Agent 任务为已取消: session={session_id}")
+    
+    # [BUG FIX v5] 将当前对话的取消信号注入 context，自动传播到子线程
+    token = _cancel_ctx.set(cancel_event)
     
     # 性能优化：意图路由 - 简单问题走Chat模式（跳过Agent循环，减少3-5秒延迟）
     if mode == "agent" and _is_simple_query(user_input) and not web_search:

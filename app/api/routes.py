@@ -267,26 +267,83 @@ async def chat_stream_api(req: ChatRequest, request: Request, username: str = De
     返回 Server-Sent Events (SSE) 流
     
     性能优化：检测客户端断开，避免服务端空转消耗资源
+    
+    BUG FIX v5：客户端断开时通过取消 asyncio.Task 真正终止 Agent 执行，
+    不再只是 break 退出循环（旧方式会导致 LangGraph 后台继续调用 LLM，消耗 rate limit）
     """
     start = time.time()
     # 记录统计
     record_message(username=username or "anonymous", model_id=get_current_model())
 
     async def event_generator():
+        # [BUG FIX v5] 用 Queue + Producer Task 模式替代直接迭代，
+        # 使得客户端断开时可以真正 cancel Agent 执行（而非只 break 循环）
+        queue = asyncio.Queue()
+        stream_done = object()  # 流结束的哨兵值
+        cancelled_by_client = False
+        
+        async def produce():
+            """在独立 Task 中运行 chat_stream_generator，结果通过 queue 传递"""
+            try:
+                async for chunk in chat_stream_generator(req.message, req.session_id, web_search=req.web_search, mode=req.mode, deep_think=req.deep_think, agent_id=req.agent_id, agent_task=req.agent_task):
+                    # 检查客户端是否断开
+                    if await request.is_disconnected():
+                        nonlocal cancelled_by_client
+                        cancelled_by_client = True
+                        logger.info(f"SSE客户端断开，正在终止Agent执行: session={req.session_id}")
+                        # 中断 async for 循环，触发 chat_stream_generator 内部的 CancelledError/cleanup
+                        break
+                    await queue.put(chunk)
+                await queue.put(stream_done)
+            except asyncio.CancelledError:
+                # 被外部 cancel 时正常退出
+                logger.info(f"Agent执行任务被取消: session={req.session_id}")
+                raise
+            except Exception as e:
+                logger.exception(f"SSE生产者异常: session={req.session_id}")
+                await queue.put({'type': 'error', 'content': str(e)})
+                await queue.put(stream_done)
+        
+        producer_task = asyncio.create_task(produce())
+        
         try:
-            async for chunk in chat_stream_generator(req.message, req.session_id, web_search=req.web_search, mode=req.mode, deep_think=req.deep_think, agent_id=req.agent_id, agent_task=req.agent_task):
-                # 检测客户端是否已断开连接，避免服务端空转
-                if await request.is_disconnected():
-                    logger.info(f"SSE客户端已断开，停止生成: session={req.session_id}")
+            while True:
+                # 用独立 task 等待下一个 chunk，这样可以同时检测客户端断开
+                get_task = asyncio.create_task(queue.get())
+                while not get_task.done():
+                    if await request.is_disconnected():
+                        cancelled_by_client = True
+                        logger.info(f"SSE客户端断开，正在取消Agent执行: session={req.session_id}")
+                        get_task.cancel()
+                        # 真正取消 producer task → 中断 chat_stream_generator → 触发 CancelledError handler
+                        producer_task.cancel()
+                        try:
+                            await asyncio.shield(producer_task)
+                        except asyncio.CancelledError:
+                            pass
+                        return
+                    await asyncio.sleep(0.05)
+                
+                chunk = await get_task
+                if chunk is stream_done:
+                    break
+                if isinstance(chunk, dict) and chunk.get('type') == 'error':
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                     break
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
         except asyncio.CancelledError:
-            logger.info(f"SSE流被取消: session={req.session_id}")
+            logger.info(f"SSE流被取消（外部信号）: session={req.session_id}")
+            producer_task.cancel()
+            try:
+                await asyncio.shield(producer_task)
+            except asyncio.CancelledError:
+                pass
             return
-        except Exception as e:
-            logger.exception(f"SSE流异常: session={req.session_id}")
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+        finally:
+            if not producer_task.done():
+                producer_task.cancel()
+        
         # 更新会话时间
         try:
             parts = req.session_id.split("_", 1)
@@ -295,6 +352,8 @@ async def chat_stream_api(req: ChatRequest, request: Request, username: str = De
         except Exception:
             pass
         _record_request("/chat/stream", time.time() - start)
+        if cancelled_by_client:
+            logger.info(f"SSE流完成（客户端主动断开）: session={req.session_id}")
 
     return StreamingResponse(
         event_generator(),
