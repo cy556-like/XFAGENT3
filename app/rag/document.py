@@ -12,6 +12,7 @@
 """
 import os
 os.environ["ANONYMIZED_TELEMETRY"] = "False"  # 关闭 chromadb 遥测，避免 posthog 兼容性警告
+os.environ["CHROMA_TELEMETRY_ENABLED"] = "false"  # [v0.5+] 新版 chromadb 遥测开关
 import re
 from urllib.parse import unquote
 import json
@@ -3334,6 +3335,7 @@ def cleanup_export_files(session_id: str = "", username: str = "") -> int:
     Returns:
         int: 删除的文件数量
     """
+    import shutil  # [BUG FIX] 原代码用 shutil.rmtree 但函数内未导入
     export_dir = _get_export_dir()
     if not os.path.exists(export_dir):
         return 0
