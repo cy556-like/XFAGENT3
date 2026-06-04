@@ -28,7 +28,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from app.config import settings, VISION_MODELS, DEFAULT_VISION_MODEL, FAST_MODELS
+from app.config import settings, VISION_MODELS, DEFAULT_VISION_MODEL, FAST_MODELS, DEEPSEEK_MODELS
 from app.agent.tools import ALL_TOOLS, get_tools, set_current_agent_id, set_current_session_id, get_current_session_id, reset_search_count
 from app.agent.prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_WITH_WEB_SEARCH, CHAT_SYSTEM_PROMPT
 from app.memory.manager import get_session_history
@@ -197,8 +197,16 @@ def create_llm(deep_think: bool = False, fast_mode: bool = False, model_override
     # 决定使用主Key还是备用Key（用锁保护并发读写）
     with _primary_key_lock:
         use_backup = _primary_key_failed and bool(settings.LLM_API_KEY_BACKUP)
-    api_key = settings.LLM_API_KEY_BACKUP if use_backup else settings.LLM_API_KEY
-    base_url = settings.LLM_BASE_URL_BACKUP if use_backup else settings.LLM_BASE_URL
+    
+    # [DeepSeek] 检测是否为 DeepSeek 模型，自动切换火山引擎 API
+    is_deepseek = model in DEEPSEEK_MODELS
+    if is_deepseek and settings.DEEPSEEK_API_KEY:
+        api_key = settings.DEEPSEEK_API_KEY
+        base_url = settings.DEEPSEEK_BASE_URL
+        logger.info(f"DeepSeek 模型检测到，使用火山引擎 API: {base_url}")
+    else:
+        api_key = settings.LLM_API_KEY_BACKUP if use_backup else settings.LLM_API_KEY
+        base_url = settings.LLM_BASE_URL_BACKUP if use_backup else settings.LLM_BASE_URL
     temperature = 0.3 if deep_think else 0.1
     
     # [性能优化] 智能 max_tokens：短回复场景减少预分配，加速推理
