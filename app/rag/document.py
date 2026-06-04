@@ -1456,10 +1456,12 @@ def index_document(file_path: str, filename: str = None, agent_id: str = None) -
 # 结构: { cache_key: { "bm25": BM25Okapi, "corpus": [str], "metadatas": [dict], "ids": [str], "updated_at": float } }
 _bm25_index_cache = {}
 _BM25_INDEX_TTL = 1800  # [优化7] 索引缓存30分钟（原5分钟，延长后减少空闲后索引重建 200ms-1s）
+_BM25_INDEX_MAX_ENTRIES = 50  # [性能修复] 最多缓存50个智能体的BM25索引，超过则淘汰最久未使用的
 
 # 旧版全量文档缓存（保留作为 rank_bm25 不可用时的降级方案）
 _bm25_doc_cache = {}  # agent_id -> {"data": all_docs, "updated_at": float}
 _BM25_CACHE_TTL = 120
+_BM25_DOC_MAX_ENTRIES = 50  # [性能修复] 最多缓存50个智能体的文档缓存
 
 
 def _tokenize_text(text: str) -> list[str]:
@@ -1551,6 +1553,11 @@ def _build_bm25_index(agent_id: str = None) -> dict:
         "updated_at": now,
     }
     _bm25_index_cache[cache_key] = index_data
+    # [性能修复] LRU 淘汰：超过最大条目数时，移除最久未更新的条目
+    while len(_bm25_index_cache) > _BM25_INDEX_MAX_ENTRIES:
+        oldest_key = min(_bm25_index_cache, key=lambda k: _bm25_index_cache[k]["updated_at"])
+        del _bm25_index_cache[oldest_key]
+        logger.info(f"[#12] BM25 索引缓存 LRU 淘汰: {oldest_key}")
     logger.info(f"[#12] BM25 索引已构建: cache_key={cache_key}, 文档数={len(corpus)}")
     return index_data
 
@@ -1579,6 +1586,10 @@ def _get_all_docs_cached(agent_id: str = None) -> dict:
         collection = vector_store._collection
         all_docs = collection.get(include=["documents", "metadatas"])
         _bm25_doc_cache[cache_key] = {"data": all_docs, "updated_at": now}
+        # [性能修复] LRU 淘汰：超过最大条目数时，移除最久未更新的条目
+        while len(_bm25_doc_cache) > _BM25_DOC_MAX_ENTRIES:
+            oldest_key = min(_bm25_doc_cache, key=lambda k: _bm25_doc_cache[k]["updated_at"])
+            del _bm25_doc_cache[oldest_key]
         return all_docs
     except Exception as e:
         logger.warning(f"获取全量文档失败: {e}")
@@ -1601,6 +1612,44 @@ def _bm25_cache_invalidation(agent_id: str = None):
         cleared.append("全量文档缓存")
     if cleared:
         logger.info(f"BM25缓存已清除: {cache_key} ({', '.join(cleared)})")
+
+
+def cleanup_bm25_caches():
+    """[性能修复] 定期清理过期/过多的 BM25 缓存条目，由 main.py 的定期任务调用
+    
+    清理策略：
+    1. 淘汰超过 TTL 的 BM25 索引缓存条目
+    2. 淘汰超过 TTL 的全量文档缓存条目
+    3. 如果缓存总数超过最大条目数，淘汰最老的
+    """
+    now = time.time()
+    
+    # 清理过期的 BM25 索引缓存
+    stale_index = [k for k, v in _bm25_index_cache.items()
+                   if now - v.get("updated_at", 0) > _BM25_INDEX_TTL]
+    for k in stale_index:
+        del _bm25_index_cache[k]
+    
+    # 清理过期的全量文档缓存
+    stale_doc = [k for k, v in _bm25_doc_cache.items()
+                 if now - v.get("updated_at", 0) > _BM25_CACHE_TTL]
+    for k in stale_doc:
+        del _bm25_doc_cache[k]
+    
+    # 如果仍然超过最大条目数，淘汰最老的
+    while len(_bm25_index_cache) > _BM25_INDEX_MAX_ENTRIES:
+        oldest = min(_bm25_index_cache, key=lambda k: _bm25_index_cache[k].get("updated_at", 0))
+        del _bm25_index_cache[oldest]
+        stale_index.append(oldest)
+    
+    while len(_bm25_doc_cache) > _BM25_DOC_MAX_ENTRIES:
+        oldest = min(_bm25_doc_cache, key=lambda k: _bm25_doc_cache[k].get("updated_at", 0))
+        del _bm25_doc_cache[oldest]
+        stale_doc.append(oldest)
+    
+    total = len(stale_index) + len(stale_doc)
+    if total > 0:
+        logger.info(f"[定期清理] BM25缓存清理: 索引{len(stale_index)}条, 文档{len(stale_doc)}条, 剩余索引={len(_bm25_index_cache)}, 文档={len(_bm25_doc_cache)}")
 
 
 def _bm25_keyword_search(query: str, top_k: int = 10, agent_id: str = None) -> list[dict]:

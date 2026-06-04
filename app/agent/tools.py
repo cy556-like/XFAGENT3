@@ -770,10 +770,13 @@ def github_api_tool(action: str, repo: str = "", path: str = "", content: str = 
         return "【GitHub 操作】写入操作需要 Token 鉴权。请在对话中提供 Token，或在 .env 中设置 GITHUB_TOKEN。读取公开仓库不需要 Token。"
     base_url = f"https://api.github.com/repos/{repo}"
 
+    # [性能修复] 使用 httpx.Client 上下文管理器确保 TCP 连接及时释放，
+    # 避免长时间运行后文件描述符耗尽导致变慢/报错
     try:
         if action == "list":
             url = f"{base_url}/contents/{path}" if path else f"{base_url}/contents"
-            resp = httpx.get(url, headers=headers, timeout=15)
+            with httpx.Client(headers=headers, timeout=15) as client:
+                resp = client.get(url)
             if resp.status_code != 200:
                 return f"【GitHub 操作】获取目录失败: {resp.status_code} {resp.text[:200]}"
             items = resp.json()
@@ -800,7 +803,8 @@ def github_api_tool(action: str, repo: str = "", path: str = "", content: str = 
 
             # 先尝试 Contents API（小文件快速获取）
             url = f"{base_url}/contents/{path}"
-            resp = httpx.get(url, headers=headers, timeout=15)
+            with httpx.Client(headers=headers, timeout=15) as client:
+                resp = client.get(url)
             if resp.status_code == 200:
                 data = resp.json()
                 sha = data.get("sha", "")
@@ -809,7 +813,8 @@ def github_api_tool(action: str, repo: str = "", path: str = "", content: str = 
                 if file_size > 100000:
                     blob_sha = data.get("sha", "")
                     blob_url = f"{base_url}/git/blobs/{blob_sha}"
-                    blob_resp = httpx.get(blob_url, headers=headers, timeout=30)
+                    with httpx.Client(headers=headers, timeout=30) as client:
+                        blob_resp = client.get(blob_url)
                     if blob_resp.status_code == 200:
                         blob_data = blob_resp.json()
                         file_content = base64.b64decode(blob_data["content"]).decode("utf-8", errors="replace")
@@ -821,7 +826,8 @@ def github_api_tool(action: str, repo: str = "", path: str = "", content: str = 
             elif resp.status_code == 403:
                 # Contents API 对大文件返回 403，使用 Raw URL 直接获取文件内容
                 raw_url = f"https://raw.githubusercontent.com/{repo}/main/{path}"
-                raw_resp = httpx.get(raw_url, headers={"User-Agent": "DocAgent/1.0"}, timeout=30)
+                with httpx.Client(headers={"User-Agent": "DocAgent/1.0"}, timeout=30) as client:
+                    raw_resp = client.get(raw_url)
                 if raw_resp.status_code == 200:
                     file_content = raw_resp.text
                 else:
@@ -847,7 +853,8 @@ def github_api_tool(action: str, repo: str = "", path: str = "", content: str = 
             import base64
             # 先获取当前文件的 sha
             url = f"{base_url}/contents/{path}"
-            resp = httpx.get(url, headers=headers, timeout=15)
+            with httpx.Client(headers=headers, timeout=15) as client:
+                resp = client.get(url)
             if resp.status_code != 200:
                 # 文件不存在，创建新文件
                 sha = None
@@ -862,7 +869,8 @@ def github_api_tool(action: str, repo: str = "", path: str = "", content: str = 
             if sha:
                 body["sha"] = sha
 
-            resp = httpx.put(url, headers=headers, json=body, timeout=15)
+            with httpx.Client(headers=headers, timeout=15) as client:
+                resp = client.put(url, json=body)
             if resp.status_code in (200, 201):
                 return f"【GitHub 操作】文件更新成功: {repo}/{path}\nCommit: {commit_msg}"
             else:

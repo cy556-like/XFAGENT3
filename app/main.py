@@ -80,9 +80,12 @@ def setup_logging():
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
 
-    # 文件输出
-    file_handler = logging.FileHandler(
+    # 文件输出（带轮转：每个文件最大10MB，保留最近5个，防止磁盘占满）
+    from logging.handlers import RotatingFileHandler
+    file_handler = RotatingFileHandler(
         os.path.join(log_dir, 'app.log'),
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=5,
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -319,6 +322,13 @@ def create_app() -> FastAPI:
                         cleanup_stale_caches()
                     except Exception as e:
                         logger.warning(f"[定期清理] Agent缓存清理失败: {e}")
+                    
+                    # [性能修复] 9. 清理 BM25 文档缓存（防止长期运行后缓存膨胀）
+                    try:
+                        from app.rag.document import cleanup_bm25_caches
+                        cleanup_bm25_caches()
+                    except Exception as e:
+                        logger.warning(f"[定期清理] BM25缓存清理失败: {e}")
                     
                     # [性能修复] 8. 清理工具缓存（长时间运行后缓存可能很大）
                     try:
