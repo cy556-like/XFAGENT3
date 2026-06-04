@@ -12,6 +12,7 @@ import sys
 import time
 import signal
 import logging
+import threading
 
 # 确保项目根目录在 Python 路径中
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -28,6 +29,7 @@ from app.api.routes import router
 # ===== [#25] 优雅关闭状态 =====
 _shutdown_requested = False
 _active_connections = 0
+_active_connections_lock = threading.Lock()  # [BUG FIX] 防止并发读写计数出错
 
 
 def is_shutting_down() -> bool:
@@ -129,10 +131,12 @@ def create_app() -> FastAPI:
     )
 
     # CORS 跨域支持
+    # [BUG FIX] allow_origins=["*"] + allow_credentials=True 在浏览器规范中无效，
+    # 浏览器会拒绝发送带凭据的请求（credentials 模式下不允许通配符 origin）
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -148,7 +152,8 @@ def create_app() -> FastAPI:
         should_log = not any(path.startswith(p) for p in skip_paths)
         
         start_time = time.time()
-        _active_connections += 1
+        with _active_connections_lock:
+            _active_connections += 1
         
         try:
             response = await call_next(request)
@@ -175,7 +180,8 @@ def create_app() -> FastAPI:
             
             return response
         finally:
-            _active_connections -= 1
+            with _active_connections_lock:
+                _active_connections -= 1
 
     # 注册 API 路由
     app.include_router(router, prefix="/api/v1", tags=["Agent API"])
