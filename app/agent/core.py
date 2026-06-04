@@ -29,7 +29,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from app.config import settings, VISION_MODELS, DEFAULT_VISION_MODEL, FAST_MODELS
-from app.agent.tools import ALL_TOOLS, get_tools, set_current_agent_id, set_current_session_id, reset_search_count
+from app.agent.tools import ALL_TOOLS, get_tools, set_current_agent_id, set_current_session_id, get_current_session_id, reset_search_count
 from app.agent.prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_WITH_WEB_SEARCH, CHAT_SYSTEM_PROMPT
 from app.memory.manager import get_session_history
 
