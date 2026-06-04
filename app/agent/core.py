@@ -161,7 +161,9 @@ _primary_key_lock = threading.Lock()  # [BUG FIX] 并发安全
 
 # [优化1] LLM Client 缓存：按 (model, api_key, base_url, temperature) 缓存 ChatOpenAI 实例
 # 避免每次请求新建 HTTP 连接，减少 500ms-3s 的连接建立开销
-_llm_cache = {}  # cache_key -> ChatOpenAI instance
+# [BUG FIX v8] 缓存加 TTL：空闲后 API 服务端关闭 TCP 连接，复用缓存实例会导致请求卡 5-30s
+_llm_cache = {}  # cache_key -> {"instance": ChatOpenAI, "created_at": float}
+_LLM_CACHE_TTL = 900  # 15分钟，短于代理/服务端典型空闲超时（60-120s）
 
 def create_llm(deep_think: bool = False, fast_mode: bool = False, model_override: str = None, 
                short_response: bool = False):
@@ -228,11 +230,17 @@ def create_llm(deep_think: bool = False, fast_mode: bool = False, model_override
     else:
         request_timeout = 120
 
-    # [优化1] 检查缓存，复用已有的 ChatOpenAI 实例
+    # [优化1] 检查缓存，复用已有的 ChatOpenAI 实例（带 TTL 检查）
     cache_key = (model, api_key, base_url, temperature)
     if cache_key in _llm_cache:
-        logger.debug(f"LLM Client 缓存命中: model={model}")
-        return _llm_cache[cache_key]
+        entry = _llm_cache[cache_key]
+        if time.time() - entry["created_at"] < _LLM_CACHE_TTL:
+            logger.debug(f"LLM Client 缓存命中: model={model}")
+            return entry["instance"]
+        else:
+            # [BUG FIX v8] TTL 过期，丢弃旧实例（TCP 连接已死），下面创建新的
+            logger.info(f"LLM Client 缓存过期（>{_LLM_CACHE_TTL}s），重新创建: model={model}")
+            del _llm_cache[cache_key]
 
     if use_backup:
         logger.info(f"使用备用API Key（主Key已失效）: {base_url}")
@@ -251,7 +259,7 @@ def create_llm(deep_think: bool = False, fast_mode: bool = False, model_override
         # [重要] 不设置 max_retries，避免超时时指数退避重试放大响应时间
         # 复杂任务（DFMEA等）LLM生成需要60-120s，重试会导致200-300s的卡死
     )
-    _llm_cache[cache_key] = llm
+    _llm_cache[cache_key] = {"instance": llm, "created_at": time.time()}
     logger.info(f"LLM Client 已创建并缓存: model={model}, max_tokens={max_tokens}, timeout={request_timeout}s, 缓存数量={len(_llm_cache)}")
     return llm
 
@@ -368,30 +376,23 @@ def reset_agent():
 def cleanup_stale_caches():
     """[性能修复] 定期清理过期的缓存，防止长时间运行后内存增长
     
-    由 main.py 的定期清理任务每10分钟调用一次。
+    由 main.py 的定期清理任务每5分钟调用一次。
     清理内容：
     1. 超过30分钟未使用的 Agent Graph 缓存
-    2. 超过1小时未使用的 LLM Client 缓存（TCP连接会被服务端关闭，缓存的连接已无效）
+    2. [v8] 超过 TTL 的 LLM Client 缓存（TCP连接空闲后被服务端关闭，必须重建）
     """
     _cleanup_stale_graph_cache()
     
-    # [性能修复] 清理长时间未使用的 LLM Client 缓存
-    # ChatOpenAI 实例内部持有 httpx 连接池，长时间不用会占用文件描述符
-    # 只保留当前活跃模型的客户端
+    # [v8 修复] 清理超过 TTL 的 LLM Client 缓存
+    # 旧代码 guard len(_llm_cache) > 2 在典型单模型场景下永远不执行
+    # 现在按 TTL 逐项清理
     global _llm_cache
-    if len(_llm_cache) > 2:
-        # 保留当前模型的缓存，清理其他
-        current_key = None
-        for key in _llm_cache:
-            model, api_key, base_url, temp = key
-            if model == settings.LLM_MODEL:
-                current_key = key
-                break
-        if current_key and current_key in _llm_cache:
-            kept = {current_key: _llm_cache[current_key]}
-            _llm_cache.clear()
-            _llm_cache.update(kept)
-            logger.info(f"[缓存清理] LLM Client 缓存清理完成，保留当前模型，清理前={len(_llm_cache)+1 if current_key else 0}，清理后=1")
+    now = time.time()
+    stale = [k for k, v in _llm_cache.items() if now - v["created_at"] > _LLM_CACHE_TTL]
+    for k in stale:
+        del _llm_cache[k]
+    if stale:
+        logger.info(f"[缓存清理] LLM Client 缓存清理了 {len(stale)} 个过期实例（>{_LLM_CACHE_TTL}s），剩余 {len(_llm_cache)}")
 
 # [性能修复] Agent Graph 缓存过期检查：超过30分钟未使用的缓存自动清理
 _AGENT_GRAPH_CACHE_TTL = 1800  # 30分钟
