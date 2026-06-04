@@ -57,7 +57,7 @@ _VECTOR_STORE_CACHE_MAX_SIZE = 20
 # [优化3] ChromaDB PersistentClient 全局单例，避免重复初始化 + SQLite 锁冲突
 # 每次 new PersistentClient() 会打开新的 SQLite 连接，多个实例会导致 SQLite 锁竞争
 _chroma_client = None
-
+_CHROMA_CLIENT_TTL = 1800  # [v8] 30分钟后重建，避免 SQLite WAL 锁/连接过期
 # ===== [#11] Embedding 可用性标志 =====
 # None = 尚未检测，True = 可用，False = 不可用（自动降级为关键词模式）
 _embedding_available = None
@@ -66,6 +66,10 @@ _embedding_available = None
 # 降级 5 分钟后自动重试，不再因一次超时永久降级
 _embedding_degraded_at = None
 _EMBEDDING_RECOVERY_TIMEOUT = 300  # 5 分钟后自动尝试恢复
+
+# [BUG FIX v8] Embedding 实例 TTL：空闲后 httpx 连接池中的 TCP 连接被服务端关闭
+# 超时后强制重建 OpenAIEmbeddings，避免 5-30s 连接超时
+_EMBEDDINGS_TTL = 900  # 15分钟
 
 # 全局知识库的 collection 名称
 GLOBAL_COLLECTION_NAME = "langchain"
@@ -352,6 +356,13 @@ def get_embeddings():
         else:
             return None
 
+    # [BUG FIX v8] TTL 检查：空闲后重建 Embedding 实例，避免死 TCP 连接
+    if (_embeddings_instance is not None
+        and hasattr(_embeddings_instance, '_created_at')
+        and time.time() - _embeddings_instance._created_at > _EMBEDDINGS_TTL):
+        logger.info(f"Embedding 实例超过 TTL（{_EMBEDDINGS_TTL}s），重建以刷新连接池")
+        _embeddings_instance = None
+
     if _embeddings_instance is None:
         try:
             from langchain_openai import OpenAIEmbeddings
@@ -365,6 +376,7 @@ def get_embeddings():
                 model=embedding_model,
                 request_timeout=15,  # 超时保护：15秒，避免初始化卡死整个服务
             )
+            _embeddings_instance._created_at = time.time()  # [v8] 记录创建时间用于 TTL 检查
             _embedding_available = True
             logger.info(f"✅ Embedding 模型已初始化（智谱云端API）: {embedding_model}")
         except ImportError:
@@ -428,9 +440,18 @@ def get_vector_store(agent_id: str = None):
         collection_name = _get_collection_name(agent_id)
         try:
             # [优化3] 使用全局 PersistentClient 单例，避免重复创建导致的 SQLite 锁冲突
+            # [v8] TTL 检查：空闲后重建，避免 SQLite 连接过期
+            if (_chroma_client is not None
+                and hasattr(_chroma_client, '_created_at')
+                and time.time() - _chroma_client._created_at > _CHROMA_CLIENT_TTL):
+                logger.info(f"ChromaDB PersistentClient 超过 TTL（{_CHROMA_CLIENT_TTL}s），重建连接")
+                _chroma_client = None
+                _vector_store_cache.clear()  # 旧的 Chroma 实例引用已失效
+            
             if _chroma_client is None:
                 import chromadb
                 _chroma_client = chromadb.PersistentClient(path=settings.CHROMA_DIR)
+                _chroma_client._created_at = time.time()  # [v8] 记录创建时间
                 logger.info(f"[优化3] ChromaDB PersistentClient 已创建全局单例: {settings.CHROMA_DIR}")
             vs = Chroma(
                 collection_name=collection_name,
