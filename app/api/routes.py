@@ -455,7 +455,7 @@ async def chat_with_file_stream(
         if store_to_kb == "true" and agent_id:
             # 知识库模式 ON + 有 agent_id：索引到智能体知识库
             try:
-                index_result = index_document(file_path, decoded_filename, agent_id=agent_id)
+                index_result = await asyncio.to_thread(index_document, file_path, decoded_filename, agent_id=agent_id)
                 indexing_mode = index_result.get('indexing_mode', 'unknown')
                 logger.info(f"文件已索引到知识库: {file.filename}, agent_id={agent_id}, 分块数={index_result.get('chunks', 0)}, 索引模式={indexing_mode}")
             except Exception as e:
@@ -465,7 +465,7 @@ async def chat_with_file_stream(
         else:
             # 普通模式或 store_to_kb=false：只读取内容回答，不存入知识库
             try:
-                docs = load_document(file_path)
+                docs = await asyncio.to_thread(load_document, file_path)
                 text = "\n".join([doc.page_content for doc in docs])
                 full_message = f"[用户上传了文档: {file.filename}]\n\n文档内容：\n{text[:8000]}\n\n{message}"
                 mode_label = "普通聊天（不存知识库）" if not agent_id else "知识库模式OFF"
@@ -553,7 +553,9 @@ async def upload_document(file: UploadFile = File(...), agent_id: str = Form(Non
 
     # 索引文档（[#11] 自动降级：embedding不可用时切换为关键词索引）
     try:
-        result = index_document(file_path, decoded_filename, agent_id=agent_id)
+        # [性能修复] 用 asyncio.to_thread 在线程池中执行同步 index_document，
+        # 避免文件加载+分块+Embedding API调用阻塞整个事件循环
+        result = await asyncio.to_thread(index_document, file_path, decoded_filename, agent_id=agent_id)
         indexing_mode_result = result.get('indexing_mode', 'unknown')
         logger.info(f"文档索引完成: {file.filename}, agent_id={agent_id}, 分块数={result.get('chunks', 0)}, 索引模式={indexing_mode_result}")
         return {"status": "success", "detail": result}
@@ -673,7 +675,7 @@ async def modify_document_api(filename: str, req: ModifyDocumentRequest):
     if req.append:
         try:
             from app.rag.document import load_document
-            docs = load_document(file_path)
+            docs = await asyncio.to_thread(load_document, file_path)
             original_text = "\n".join([doc.page_content for doc in docs])
             final_content = original_text + "\n" + req.content
         except Exception as e:
@@ -1370,7 +1372,7 @@ async def reindex_knowledge(agent_id: str = Query(None, description="智能体ID
     2. 删除旧collection
     3. 用新的embedding模型重新索引所有文档
     """
-    result = reindex_all_documents(agent_id=agent_id)
+    result = await asyncio.to_thread(reindex_all_documents, agent_id=agent_id)
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["message"])
     return {"status": "success", "detail": result}
