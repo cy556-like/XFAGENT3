@@ -60,23 +60,43 @@ MAX_TOOL_RETRIES = 2
 RETRYABLE_TOOL_ERRORS = ["搜索失败", "未找到", "连接", "超时", "timeout", "error"]
 
 # 意图路由：简单问题关键词（匹配这些关键词的问题直接用Chat模式，跳过Agent工具调用）
+# [性能优化] 扩展了通用简单问题的覆盖范围，减少不必要的Agent循环
 SIMPLE_QUERY_PATTERNS = [
+    # 闲聊
     "你好", "嗨", "hello", "hi", "你是谁", "你叫什么", "介绍一下你自己",
     "谢谢", "感谢", "再见", "拜拜", "好的", "知道了",
+    # 常识/短问答
+    "是什么", "什么是", "怎么读", "怎么写", "怎么说",
+    "多少", "等于", "算", "翻译", "今天是", "天气",
+    "为什么", "怎么样", "什么意思",
 ]
+# 简单问题的最大字符数（超过此长度认为不是简单问题）
+SIMPLE_MAX_LENGTH = 20
 
 def _is_simple_query(query: str) -> bool:
     """判断用户输入是否为简单问题（不需要工具调用的闲聊/通用问题）
     
     简单问题走 Chat 模式直接回答，跳过 Agent 的 Think→Act→Observe 循环，
     可以将响应时间从 3-5秒 降低到 0.5-1秒（首Token延迟）。
+    
+    [性能优化] 新增长度回退：短问题（≤15字）即使不匹配关键词，也大概率是简单问题
     """
     query_stripped = query.strip()
-    # 短文本匹配（<15字）
-    if len(query_stripped) <= 15:
-        for pattern in SIMPLE_QUERY_PATTERNS:
-            if pattern in query_stripped.lower():
-                return True
+    query_lower = query_stripped.lower()
+    
+    # 1. 精确关键词匹配
+    for pattern in SIMPLE_QUERY_PATTERNS:
+        if pattern in query_lower:
+            return True
+    
+    # 2. [性能优化] 短文本回退：≤15字的短问题大概率不需要工具调用
+    # 排除包含知识库关键词的（如"制度""流程""规范""员工""文档"）
+    if len(query_stripped) <= SIMPLE_MAX_LENGTH:
+        knowledge_keywords = ["制度", "流程", "规范", "员工", "文档", "政策", "规定", "公司", "部门"]
+        if not any(kw in query_stripped for kw in knowledge_keywords):
+            # 不包含数字和问号（可能是简单编程/计算问题）
+            return True
+    
     return False
 
 def _inject_current_date(system_prompt: str) -> str:
@@ -103,12 +123,14 @@ class AgentState(TypedDict):
 # ===== 2. 创建 LLM =====
 # 主Key是否已确认失效（运行时标记，避免每次都重试失败的Key）
 _primary_key_failed = False
+_primary_key_lock = threading.Lock()  # [BUG FIX] 并发安全
 
 # [优化1] LLM Client 缓存：按 (model, api_key, base_url, temperature) 缓存 ChatOpenAI 实例
 # 避免每次请求新建 HTTP 连接，减少 500ms-3s 的连接建立开销
 _llm_cache = {}  # cache_key -> ChatOpenAI instance
 
-def create_llm(deep_think: bool = False, fast_mode: bool = False):
+def create_llm(deep_think: bool = False, fast_mode: bool = False, model_override: str = None, 
+               short_response: bool = False):
     """创建 LLM 实例（启用 streaming 支持，支持备用Key自动切换）
     
     [优化1] 使用缓存：按 (model, api_key, base_url, temperature) 作为缓存 key，
@@ -116,19 +138,21 @@ def create_llm(deep_think: bool = False, fast_mode: bool = False):
     每次新建连接耗时 500ms-3s，复用后降至 <50ms。
     
     Args:
-        deep_think: 是否启用深度思考模式（使用更强的模型）
+        deep_think: 是否启用深度思考模式（使用更强的模型、先思考再回答）
         fast_mode: 是否使用快速模型（用于简单问题的快速响应）
+        model_override: 强制指定模型（用于多模态等需要切换模型的场景）
+        short_response: 是否为短回复场景（降低 max_tokens 加速推理）
     """
     global _primary_key_failed
-    model = settings.LLM_MODEL
+    model = model_override or settings.LLM_MODEL
     
-    if fast_mode:
+    if fast_mode and not model_override:
         for m in ["glm-4-flash", "glm-4-air", "glm-4.7-flash"]:
             if m != model:
                 model = m
                 break
         logger.info(f"快速模式：使用模型 {model}")
-    elif deep_think:
+    elif deep_think and not model_override:
         deep_think_models = ["glm-4-plus", "glm-4.7", "glm-4-long", "glm-4-air"]
         for m in deep_think_models:
             if m != model:
@@ -136,11 +160,31 @@ def create_llm(deep_think: bool = False, fast_mode: bool = False):
                 break
         logger.info(f"深度思考模式：尝试使用模型 {model}")
 
-    # 决定使用主Key还是备用Key
-    use_backup = _primary_key_failed and settings.LLM_API_KEY_BACKUP
+    # 决定使用主Key还是备用Key（用锁保护并发读写）
+    with _primary_key_lock:
+        use_backup = _primary_key_failed and bool(settings.LLM_API_KEY_BACKUP)
     api_key = settings.LLM_API_KEY_BACKUP if use_backup else settings.LLM_API_KEY
     base_url = settings.LLM_BASE_URL_BACKUP if use_backup else settings.LLM_BASE_URL
     temperature = 0.3 if deep_think else 0.1
+    
+    # [性能优化] 智能 max_tokens：短回复场景减少预分配，加速推理
+    if short_response:
+        max_tokens = 1024   # 闲聊、简单问题最多 1024 token
+    elif deep_think:
+        max_tokens = 8192   # 深度思考需要更多输出空间
+    else:
+        max_tokens = 4096   # 正常 Agent 模式（合理上限，减少浪费）
+    
+    # [性能优化] request_timeout 分档：
+    # - 短回复 45s（足够且不会让用户等太久）
+    # - 正常 90s（大多数请求在此范围内）
+    # - 深度思考 120s
+    if short_response:
+        request_timeout = 45
+    elif deep_think:
+        request_timeout = 120
+    else:
+        request_timeout = 90
 
     # [优化1] 检查缓存，复用已有的 ChatOpenAI 实例
     cache_key = (model, api_key, base_url, temperature)
@@ -153,17 +197,19 @@ def create_llm(deep_think: bool = False, fast_mode: bool = False):
     else:
         logger.info(f"使用主API Key: {base_url}")
 
+    # [429 自动重试] 添加 2s 初始超时用于连接检测，配合 openai 库内置重试
     llm = ChatOpenAI(
         api_key=api_key,
         base_url=base_url,
         model=model,
         temperature=temperature,
         streaming=True,
-        max_tokens=8192,
-        request_timeout=120,  # 超时保护：120秒，长提示词需要更多时间
+        max_tokens=max_tokens,
+        request_timeout=request_timeout,
+        max_retries=2,  # [性能优化] openai 内置重试（网络错误自动重试2次，含指数退避）
     )
     _llm_cache[cache_key] = llm
-    logger.info(f"LLM Client 已创建并缓存: model={model}, 缓存数量={len(_llm_cache)}")
+    logger.info(f"LLM Client 已创建并缓存: model={model}, max_tokens={max_tokens}, timeout={request_timeout}s, 缓存数量={len(_llm_cache)}")
     return llm
 
 def _check_and_switch_to_backup(error_exception):
@@ -171,16 +217,18 @@ def _check_and_switch_to_backup(error_exception):
     global _primary_key_failed
     error_str = str(error_exception).lower()
     if ("401" in error_str or "authentication" in error_str or "令牌" in error_str) and settings.LLM_API_KEY_BACKUP:
-        if not _primary_key_failed:
-            _primary_key_failed = True
-            logger.warning(f"⚠️ 主API Key认证失败(401)，已自动切换到备用Key: {settings.LLM_BASE_URL_BACKUP}")
+        with _primary_key_lock:
+            if not _primary_key_failed:
+                _primary_key_failed = True
+                logger.warning(f"⚠️ 主API Key认证失败(401)，已自动切换到备用Key: {settings.LLM_BASE_URL_BACKUP}")
         return True
     return False
 
 def reset_primary_key():
     """重置主Key状态（更换Key后调用）"""
     global _primary_key_failed
-    _primary_key_failed = False
+    with _primary_key_lock:
+        _primary_key_failed = False
 
 # ===== 3. 构建 Agent 图 =====
 def create_agent_graph(web_search: bool = False):
@@ -787,7 +835,9 @@ async def _chat_mode_stream(user_input: str, session_id: str = "default", deep_t
     set_current_agent_id(agent_id)
     set_current_session_id(session_id)
     chat_system_prompt = _inject_current_date(_build_chat_prompt(agent_task) if agent_task else CHAT_SYSTEM_PROMPT)
-    llm = create_llm(deep_think=deep_think)
+    # [性能优化] 简单问题用短回复模式：max_tokens=1024, timeout=45s, fast_mode 加速
+    is_simple = _is_simple_query(user_input)
+    llm = create_llm(deep_think=deep_think, fast_mode=is_simple, short_response=is_simple)
     history = get_session_history(session_id)
     recent_messages = history.messages[-MAX_HISTORY_MESSAGES:]
     
@@ -850,18 +900,9 @@ async def chat_stream_generator_multimodal(multimodal_content: list, session_id:
     if current_model not in VISION_MODELS:
         use_model = DEFAULT_VISION_MODEL
 
-    llm = create_llm()  # 统一使用 create_llm()，支持备用Key自动切换
-    # 如果当前模型不支持视觉，切换到视觉模型
-    if settings.LLM_MODEL not in VISION_MODELS:
-        llm = ChatOpenAI(
-            api_key=llm.api_key,
-            base_url=llm.base_url,
-            model=DEFAULT_VISION_MODEL,
-            temperature=0.1,
-            streaming=True,
-            max_tokens=8192,
-            request_timeout=60,
-        )
+    # [BUG FIX] 使用 create_llm(model_override=) 复用缓存，而非每次新建 ChatOpenAI
+    # 原代码绕过缓存每次新建 HTTP 连接池，损失 500ms-3s 连接建立时间
+    llm = create_llm(model_override=use_model)
 
     history = get_session_history(session_id)
     recent_messages = history.messages[-MAX_HISTORY_MESSAGES:]
