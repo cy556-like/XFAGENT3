@@ -1022,12 +1022,14 @@ WEB_SEARCH_TOOLS = [
     web_search_tool,
 ]
 
-# [#12] 外部系统集成工具（按需启用，需配置对应环境变量）
-EXTERNAL_TOOLS = [
-    github_api_tool,
-    send_email_tool,
-    database_query_tool,
-]
+# [#12] 外部系统集成工具（仅当配置了对应环境变量时才启用，避免无意义token消耗）
+EXTERNAL_TOOLS = []
+if os.getenv("GITHUB_TOKEN"):
+    EXTERNAL_TOOLS.append(github_api_tool)
+if os.getenv("SMTP_HOST"):
+    EXTERNAL_TOOLS.append(send_email_tool)
+if os.getenv("DATABASE_URL"):
+    EXTERNAL_TOOLS.append(database_query_tool)
 
 # 全部工具
 ALL_TOOLS = BASE_TOOLS + WEB_SEARCH_TOOLS + EXTERNAL_TOOLS
