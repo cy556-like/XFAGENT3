@@ -15,9 +15,9 @@ load_dotenv()
 
 # 可用的 LLM 模型列表
 AVAILABLE_MODELS = [
-    # DeepSeek 系列
-    {"id": "deepseek-v4-pro", "name": "DeepSeek-V4-Pro", "desc": "DeepSeek旗舰，128K上下文"},
-    {"id": "deepseek-v4-flash", "name": "DeepSeek-V4-Flash", "desc": "DeepSeek快速版，性价比高"},
+    # DeepSeek 系列（火山引擎）
+    {"id": "ep-20260604175402-5665h", "name": "DeepSeek-V4-Pro", "desc": "DeepSeek旗舰，128K上下文"},
+    {"id": "ep-20260604180137-8xxll", "name": "DeepSeek-V4-Flash", "desc": "DeepSeek快速版，性价比高"},
     # GLM-5 系列（最新）
     {"id": "glm-5.1", "name": "GLM-5.1", "desc": "最新旗舰，Coding对齐Claude Opus 4.6"},
     {"id": "glm-5-turbo", "name": "GLM-5-Turbo", "desc": "高智能基座，Agent能力SOTA"},
@@ -46,7 +46,7 @@ DEFAULT_VISION_MODEL = "glm-4v-plus"
 FAST_MODELS = {"glm-4-flash", "glm-4-air", "glm-4-air-0111", "glm-4.7-flash"}
 
 # DeepSeek 模型列表（走火山引擎API）
-DEEPSEEK_MODELS = {"deepseek-v4-pro", "deepseek-v4-flash"}
+DEEPSEEK_MODELS = {"ep-20260604175402-5665h", "ep-20260604180137-8xxll"}
 
 
 class Settings:
@@ -55,7 +55,7 @@ class Settings:
     # LLM 配置
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
     LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api.xixixixi.cloud/v1")
-    LLM_MODEL: str = os.getenv("LLM_MODEL", "deepseek-v4-flash")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "glm-5-turbo")
 
     # LLM 备用配置（主Key失效时自动切换）
     LLM_API_KEY_BACKUP: str = os.getenv("LLM_API_KEY_BACKUP", "")
@@ -63,7 +63,7 @@ class Settings:
 
     # DeepSeek 独立配置（火山引擎Ark）
     DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", os.getenv("LLM_API_KEY", ""))
-    DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://yq66.ai/v1")
+    DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
 
     # Embedding 模型
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "embedding-3")
