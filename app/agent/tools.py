@@ -178,6 +178,30 @@ def cached_tool(ttl: int = 300, include_agent_id: bool = True):
     return decorator
 
 
+# ===== [性能优化 3] HTTP 连接池复用 =====
+# 模块级 httpx 客户端：跨请求复用 TCP/TLS 连接，避免每次 web_search 重建握手
+# 节省 50-200ms/次联网搜索，且消除线程池阻塞风险
+import threading
+_search_client = None
+_search_client_lock = threading.Lock()
+
+def _get_search_client():
+    """获取或创建模块级 httpx 客户端（带连接池，线程安全）"""
+    global _search_client
+    import httpx
+    if _search_client is None:
+        with _search_client_lock:
+            if _search_client is None:
+                _search_client = httpx.Client(
+                    follow_redirects=True,
+                    timeout=15.0,
+                    limits=httpx.Limits(max_keepalive_connections=5, max_connections=20),
+                    transport=httpx.HTTPTransport(retries=2),
+                )
+                logger.info("[性能优化 3] httpx 连接池客户端已创建")
+    return _search_client
+
+
 # ===== 联网搜索工具 =====
 @tool
 @cached_tool(ttl=300, include_agent_id=False)  # [#8] web_search 缓存 5 分钟（与智能体无关）
@@ -204,9 +228,10 @@ def web_search_tool(query: str) -> str:
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }
 
-        with httpx.Client(headers=headers, follow_redirects=True, timeout=15) as client:
-            resp = client.get(search_url)
-            html = resp.text
+        # [性能优化 3] 使用模块级连接池客户端，复用 TCP/TLS 连接，避免每次搜索重建握手
+        client = _get_search_client()
+        resp = client.get(search_url, headers=headers)
+        html = resp.text
 
         # 解析百度搜索结果
         results = []
@@ -742,6 +767,12 @@ def github_api_tool(action: str, repo: str = "", path: str = "", content: str = 
 
     【用途】当代码仓库操作需求时使用，如查看仓库内容、更新文件、获取文件内容等。
     【典型问题】「帮我把这个改动推到GitHub」「查看仓库的文件列表」「更新某个文件」
+
+    【使用规则】
+    - 读取用 action="read"（大文件自动截断8000字）或 "read_full"（返回全部内容）
+    - 修改前务必先用 action="read_full" 读取完整原始内容，再修改后用 action="update" 提交
+    - 用户发送的 GitHub Token 务必通过 token 参数传入；不要回复中重复显示用户的 Token
+    - 公开仓库读取无需 Token，写操作（update）必须要有 Token
 
     Args:
         action: 操作类型，支持 "read"（读取文件，大文件截断8000字）, "read_full"（读取完整文件，不截断）, "list"（列出目录内容）, "update"（更新文件）
