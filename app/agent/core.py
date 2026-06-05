@@ -145,7 +145,8 @@ def _inject_current_date(system_prompt: str) -> str:
 def _get_date_message() -> SystemMessage:
     """获取当前日期消息（独立 SystemMessage，不破坏 system prompt 前缀缓存）"""
     now = datetime.now()
-    return SystemMessage(content=f"[系统信息：当前日期 {now.strftime('%Y年%m月%d日')}，星期{['一','二','三','四','五','六','日'][now.weekday()]}。回答中涉及时间的请使用此日期，严禁编造。]")
+    weekdays = ['一','二','三','四','五','六','日']
+    return SystemMessage(content=f"[当前日期：{now.strftime('%Y-%m-%d')} 周{weekdays[now.weekday()]}，涉及时间请用此日期，勿编造]")
 
 
 def _get_date_message() -> HumanMessage:
@@ -502,6 +503,11 @@ def _build_agent_prompt(agent_task: str, web_search: bool = False) -> str:
 - 回答通用问题时，依然保持专业、清晰的风格"""
         
         result = result.replace(old_general_rule, new_general_rule)
+        
+        # [Token优化] 用自定义角色替换默认"小智"身份，避免双份角色文本
+        old_identity = "你是一位名为「小智」的智能助手，在企业场景下专精于文档和员工信息查询，同时也能回答通用问题，并具备 GitHub 操作、邮件发送、数据库查询等能力。"
+        if old_identity in result:
+            result = result.replace(old_identity, custom_task)
         return result
     else:
         return custom_header + base_prompt
