@@ -136,8 +136,6 @@ async function saveAgents() {
     }
 }
 
-
-
 async function syncAgentsFromServer(force = false) {
     // [#12] 防抖锁：5秒内不重复同步（除非 force=true）
     if (!force && _syncAgentsLock) return;
@@ -347,23 +345,11 @@ async function switchToAgent(agentId) {
     // Render agents list
     renderMyAgents();
     
-    // Load or create chat for this agent
-    if (agent.chat_ids && agent.chat_ids.length > 0) {
-        // Try to restore last active chat for this agent
-        const lastChatId = agentActiveChatId[agentId];
-        if (lastChatId && agent.chat_ids.includes(lastChatId)) {
-            currentChatId = lastChatId;
-        } else {
-            currentChatId = agent.chat_ids[0];
-            agentActiveChatId[agentId] = currentChatId;
-            saveAgentActiveChatIds();
-        }
-        modeChatId['agent'] = currentChatId;
-        renderChatList();
-        await loadChatHistory(currentChatId);
-    } else {
-        await createNewChat();
-    }
+    // 点击智能体：直接创建新的空白对话页面，不加载历史
+    currentChatId = null;
+    modeChatId['agent'] = null;
+    clearChatUI();
+    renderChatList();
 }
 
 function renderMyAgents() {
@@ -380,53 +366,50 @@ function renderMyAgents() {
             closeSidebarOnMobile();
         };
         const initial = (agent.name && agent.name[0] || '?').toUpperCase();
-        const summary = agent.summary || (agent.id === 'xf-rd-agent' ? '研发设计与工艺优化' : '质量检测与缺陷控制');
         item.innerHTML = `
             <div class="agent-item-icon">${initial}</div>
             <div class="agent-item-info">
                 <div class="agent-item-name">${escapeHtml(agent.name)}</div>
-                <div class="agent-item-task">${escapeHtml(summary)}</div>
             </div>
-            <button class="agent-action-btn edit" onclick="event.stopPropagation(); openAgentEditModal('${agent.id}')" title="编辑提示词" aria-label="编辑智能体">✏</button>
+            <button class="agent-action-btn new-chat" onclick="event.stopPropagation(); createNewChatForAgent('${agent.id}')" title="新建对话" aria-label="新建对话">➕</button>
         `;
         list.appendChild(item);
     });
 }
 
-// ===== Agent Edit =====
+// ===== Agent Edit (disabled - prompt no longer user-editable) =====
 let editingAgentId = null;
 
-function openAgentEditModal(agentId) {
-    const agent = myAgents.find(a => a.id === agentId);
-    if (!agent) return;
-    editingAgentId = agentId;
-    document.getElementById('editAgentName').value = agent.name;
-    document.getElementById('editAgentTask').value = agent.task;
-    document.getElementById('agentEditModal').classList.add('show');
-    setTimeout(() => document.getElementById('editAgentTask').focus(), 100);
-}
-
-function closeAgentEditModal() {
-    document.getElementById('agentEditModal').classList.remove('show');
-    editingAgentId = null;
-}
-
-async function saveAgentEdit() {
-    if (!editingAgentId) return;
-    const task = document.getElementById('editAgentTask').value.trim();
-    if (!task) { showToast('请输入任务描述'); return; }
-
-    const agent = myAgents.find(a => a.id === editingAgentId);
-    if (!agent) return;
-
-    // 名称不可编辑，仅更新提示词
-    agent.task = task;
-    agent.updated_at = Date.now() / 1000;  // Update timestamp for cross-browser sync
-    saveAgents();
-
-    closeAgentEditModal();
-    renderMyAgents();
-    showToast(`智能体「${agent.name}」已更新`);
+async function createNewChatForAgent(agentId) {
+    if (!currentUser) return;
+    // Switch to this agent first
+    const prevAgentId = currentAgentId;
+    currentAgentId = agentId;
+    currentMode = 'agent';
+    localStorage.setItem('chatMode', 'agent');
+    document.getElementById('modeChat').classList.toggle('active', false);
+    document.getElementById('modeAgent').classList.toggle('active', true);
+    try {
+        const agent = myAgents.find(a => a.id === agentId);
+        const chatTitle = agent ? agent.name : '新对话';
+        const resp = await fetch(`/api/v1/chats?username=${encodeURIComponent(currentUser)}&title=${encodeURIComponent(chatTitle)}&mode=agent&agent_id=${agentId}`, { method: 'POST', headers: apiHeaders() });
+        const data = await resp.json();
+        if (data.success) {
+            currentChatId = data.chat.chat_id;
+            modeChatId['agent'] = currentChatId;
+            if (agent) {
+                if (!agent.chat_ids) agent.chat_ids = [];
+                if (!agent.chat_ids.includes(data.chat.chat_id)) agent.chat_ids.push(data.chat.chat_id);
+                agentActiveChatId[agentId] = data.chat.chat_id;
+                saveAgentActiveChatIds();
+                saveAgents();
+            }
+            await loadChatList();
+            clearChatUI();
+            renderMyAgents();
+            closeSidebarOnMobile();
+        }
+    } catch (e) { console.error('创建会话失败', e); }
 }
 
 function toggleMyAgents() {
@@ -436,16 +419,18 @@ function toggleMyAgents() {
 
 // ===== Agent KB Upload Toggle & Header KB Button Visibility =====
 function updateHeaderKbVisibility() {
-    const wrapper = document.getElementById('headerKbWrapper');
-    if (!wrapper) return;
-    // 只在 agent 模式 且 选中了某个智能体 时才显示 header 知识库按钮
-    if (currentMode === 'agent' && currentAgentId) {
-        wrapper.style.display = '';
+    const btn = document.getElementById('headerKbBtn');
+    if (!btn) return;
+    // 只在选中了某个智能体时才显示 header 知识库按钮
+    if (currentAgentId) {
+        btn.style.display = 'inline-flex';
     } else {
-        wrapper.style.display = 'none';
-        // 同时关闭知识库面板
-        const panel = document.getElementById('kbPanel');
-        if (panel) panel.classList.remove('show');
+        btn.style.display = 'none';
+        // 同时关闭知识库页面
+        const kbPage = document.getElementById('kbPage');
+        if (kbPage && kbPage.style.display !== 'none') {
+            hideKbPage();
+        }
     }
 }
 
@@ -831,9 +816,8 @@ async function switchModel() {
 // ===== Auth =====
 // ===== Login Modal =====
 function openLoginModal() {
-    document.getElementById('loginModalTitle').textContent = '登录企业工作台';
-    document.getElementById('loginModalSubtitle').textContent = '登录您的账号以继续';
-    switchTab('login');
+    document.getElementById('loginModalTitle').textContent = '用户登录';
+    document.getElementById('loginModalSubtitle').textContent = 'USERS LOGIN';
     document.getElementById('loginModal').classList.add('show');
     setTimeout(() => document.getElementById('loginUser').focus(), 100);
 }
@@ -847,49 +831,36 @@ function closeLoginModal() {
 }
 
 function openTrialModal() {
-    document.getElementById('loginModalTitle').textContent = '开始免费试用';
-    document.getElementById('loginModalSubtitle').textContent = '创建账号即可免费锻造你的第一个Agent';
-    switchTab('register');
+    document.getElementById('loginModalTitle').textContent = '用户登录';
+    document.getElementById('loginModalSubtitle').textContent = 'USERS LOGIN';
     document.getElementById('loginModal').classList.add('show');
-    setTimeout(() => document.getElementById('regUser').focus(), 100);
+    setTimeout(() => document.getElementById('loginUser').focus(), 100);
 }
 
 function switchTab(tab) {
-    document.querySelectorAll('.login-modal-body .tab').forEach(t => t.classList.remove('active'));
-    const indicator = document.querySelector('.tab-indicator');
-    if (tab === 'login') {
-        document.querySelectorAll('.login-modal-body .tab')[0].classList.add('active');
+    // Tab bar removed from login page, this function is kept for backward compat
+    if (document.getElementById('loginForm')) {
         document.getElementById('loginForm').style.display = 'block';
-        document.getElementById('registerForm').style.display = 'none';
-        if (indicator) { indicator.style.left = '0'; indicator.style.width = '50%'; }
-    } else {
-        document.querySelectorAll('.login-modal-body .tab')[1].classList.add('active');
-        document.getElementById('loginForm').style.display = 'none';
-        document.getElementById('registerForm').style.display = 'block';
-        if (indicator) { indicator.style.left = '50%'; indicator.style.width = '50%'; }
     }
 }
 
-// Close modal on overlay click (works with both old card layout and new fullscreen split layout)
+// 登录页作为首页：禁止点击背景关闭（已移除关闭按钮）
+// 原逻辑：点击overlay背景会关闭登录弹窗，但现在登录页就是首页，不应被关闭
 document.addEventListener('click', function(e) {
-    const modal = document.getElementById('loginModal');
-    if (!modal || !modal.classList.contains('show')) return;
-    // Close only if clicking the overlay background itself (not any child panel)
-    if (e.target === modal) closeLoginModal();
+    // 不再允许通过点击背景关闭登录弹窗
 });
 
 // Close modals on Escape key — close the topmost active modal only
 document.addEventListener('keydown', function(e) {
     if (e.key !== 'Escape') return;
-    // Priority: rename > agent edit > docs > login (topmost first)
+    // Priority: rename > docs > login (topmost first)
     const renameOverlay = document.getElementById('renameOverlay');
     if (renameOverlay && renameOverlay.classList.contains('show')) { cancelRename(); return; }
-    const agentEdit = document.getElementById('agentEditModal');
-    if (agentEdit && agentEdit.classList.contains('show')) { closeAgentEditModal(); return; }
     const docsModal = document.getElementById('docsModal');
     if (docsModal && docsModal.classList.contains('show')) { closeDocs(); return; }
     const loginModal = document.getElementById('loginModal');
-    if (loginModal && loginModal.classList.contains('show')) { closeLoginModal(); return; }
+    // 登录页作为首页，Escape键不关闭登录弹窗
+    if (loginModal && loginModal.classList.contains('show') && currentUser) { closeLoginModal(); return; }
 });
 
 async function doLogin() {
@@ -906,7 +877,6 @@ async function doLogin() {
             msgEl.className = 'msg-box success'; msgEl.textContent = '登录成功！';
             setTimeout(async () => {
                 document.getElementById('loginModal').classList.remove('show');
-                document.getElementById('loginPage').classList.add('login-hidden');
                 document.getElementById('chatPage').style.display = 'flex';
                 document.body.classList.add('body-chat-mode');
                 document.getElementById('sidebarUsername').textContent = username;
@@ -945,7 +915,6 @@ async function doRegister() {
             currentUser = username;
             setTimeout(async () => {
                 document.getElementById('loginModal').classList.remove('show');
-                document.getElementById('loginPage').classList.add('login-hidden');
                 document.getElementById('chatPage').style.display = 'flex';
                 document.body.classList.add('body-chat-mode');
                 document.getElementById('sidebarUsername').textContent = username;
@@ -967,8 +936,12 @@ async function doRegister() {
 function doLogout() {
     currentUser = null; authToken = null; selectedFile = null; currentChatId = null; allChats = []; currentAgentId = null; agentKbUploadMode = false;
     localStorage.removeItem('authToken');
+    // Hide KB page if open
+    const kbPage = document.getElementById('kbPage');
+    if (kbPage) kbPage.style.display = 'none';
     document.getElementById('chatPage').style.display = 'none';
-    document.getElementById('loginPage').classList.remove('login-hidden');
+    // 登出后直接显示登录页
+    document.getElementById('loginModal').classList.add('show');
     document.body.classList.remove('body-chat-mode');
     document.getElementById('chatMessages').innerHTML = '';
     document.getElementById('loginUser').value = '';
@@ -986,7 +959,8 @@ async function tryAutoLogin() {
         if (data.valid && data.username) {
             currentUser = data.username;
             authToken = token;
-            document.getElementById('loginPage').classList.add('login-hidden');
+            // 自动登录成功：隐藏登录页，显示聊天页
+            document.getElementById('loginModal').classList.remove('show');
             document.getElementById('chatPage').style.display = 'flex';
             document.body.classList.add('body-chat-mode');
             document.getElementById('sidebarUsername').textContent = data.username;
@@ -1005,6 +979,8 @@ async function tryAutoLogin() {
         }
     } catch (e) { console.warn('自动登录失败', e); }
     localStorage.removeItem('authToken');
+    // 自动登录失败：确保登录页可见
+    document.getElementById('loginModal').classList.add('show');
     return false;
 }
 
@@ -1714,7 +1690,11 @@ async function downloadExportFile(url) {
 // ===== Send Message =====
 async function sendMessage() {
     if (isLoading) return;
-    if (!currentChatId) { alert('请先创建或选择一个对话'); return; }
+    if (!currentChatId) {
+        // 没有当前对话时自动创建新对话（点击智能体后直接发消息的场景）
+        await createNewChat();
+        if (!currentChatId) return;  // 创建失败才退出
+    }
     const input = document.getElementById('msgInput');
     const message = input.value.trim();
     if (!message && !selectedFile) return;
@@ -1750,34 +1730,31 @@ async function sendMessage() {
         } else {
             formData.append('agent_id', '');
         }
-        // 知识库模式：📚激活时文件存入知识库，未激活时仅用于回答
-        if (agentKbUploadMode && currentAgentId) {
-            formData.append('store_to_kb', 'true');
-        } else {
-            formData.append('store_to_kb', 'false');
-        }
+        // 聊天框上传文件仅用于临时分析，不存入知识库
+        formData.append('store_to_kb', 'false');
         await streamChat('/api/v1/chat-with-file/stream', { method: 'POST', body: formData, headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {} }, bubble);
         removeFile();
         await loadChatList();
     } else if (selectedFile && !message) {
+        // 文件无消息时，自动添加分析提示，走聊天流式分析（不存知识库）
         addMessageToUI('user', `[上传文档] ${selectedFile.name}`);
-        showTyping(true);
+        const bubble = createStreamingBubble();
         const formData = new FormData();
         formData.append('file', selectedFile);
-        // Always pass agent_id when an agent is selected, not just when KB mode is on
-        formData.append('agent_id', currentAgentId || '');
-        // 知识库模式：📚激活时文件存入知识库
-        if (agentKbUploadMode && currentAgentId) {
-            formData.append('store_to_kb', 'true');
+        formData.append('message', '请分析这个文件的内容');
+        formData.append('session_id', currentChatId);
+        formData.append('web_search', webSearchEnabled);
+        formData.append('mode', currentMode);
+        formData.append('deep_think', deepThinkEnabled);
+        if (currentAgentId) {
+            formData.append('agent_id', currentAgentId);
+            const curAgent = myAgents.find(a => a.id === currentAgentId);
+            if (curAgent) formData.append('agent_task', curAgent.task);
         }
-        try {
-            const resp = await fetch('/api/v1/upload', { method: 'POST', body: formData, headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {} });
-            const data = await resp.json();
-            showTyping(false);
-            const msg = data.detail?.message || (typeof data.detail === 'string' ? data.detail : '上传成功');
-            addMessageToUI('assistant', msg);
-        } catch (e) { showTyping(false); addMessageToUI('assistant', '上传失败，请重试'); }
+        formData.append('store_to_kb', 'false');
+        await streamChat('/api/v1/chat-with-file/stream', { method: 'POST', body: formData, headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {} }, bubble);
         removeFile();
+        await loadChatList();
     } else {
         lastMessageText = message;
         addMessageToUI('user', message);
@@ -1796,7 +1773,7 @@ async function sendMessage() {
     }
 }
 
-function sendQuick(text) { document.getElementById('msgInput').value = text; sendMessage(); }
+function sendQuick(text) { const input = document.getElementById('msgInput'); input.value = text; autoResize(input); input.focus(); }
 
 function addMessageToUI(role, content, imageBase64) {
     const container = document.getElementById('chatMessages');
@@ -2057,16 +2034,6 @@ function handleKey(event) { if (event.key === 'Enter' && !event.shiftKey) { even
 function autoResize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 120) + 'px'; }
 
 // ===== Chat Search =====
-function filterChats(query) {
-    const items = document.querySelectorAll('.chat-item');
-    query = query.toLowerCase().trim();
-    items.forEach(item => {
-        const title = item.querySelector('.chat-title');
-        if (!title) return;
-        const text = title.textContent.toLowerCase();
-        item.style.display = (!query || text.includes(query)) ? '' : 'none';
-    });
-}
 
 // ===== Export Chat =====
 function toggleExportDropdown() {
@@ -2295,34 +2262,10 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Centered mode init
     updateCenteredMode();
 
-    // Try auto-login with saved JWT token
-    await tryAutoLogin();
+    // [禁用自动登录] 每次访问必须手动输入用户名密码
+    localStorage.removeItem('authToken');
 
-    // Landing page: nav scroll shadow effect
-    const landingNav = document.getElementById('landingNav');
-    const landingPage = document.getElementById('loginPage');
-    if (landingPage && landingNav) {
-        landingPage.addEventListener('scroll', function() {
-            landingNav.classList.toggle('scrolled', landingPage.scrollTop > 10);
-        });
-    }
-
-    // Landing page: smooth scroll for anchor links
-    document.querySelectorAll('.nav-link, .footer-links a, .coze-footer-links a').forEach(link => {
-        link.addEventListener('click', function(e) {
-            const href = this.getAttribute('href');
-            if (href && href.startsWith('#')) {
-                e.preventDefault();
-                const target = document.querySelector(href);
-                if (target && landingPage) {
-                    landingPage.scrollTo({
-                        top: target.offsetTop - 64,
-                        behavior: 'smooth'
-                    });
-                }
-            }
-        });
-    });
+    // Landing page: nav scroll & smooth scroll (宣传页已删除，跳过)
 
     // Sync agents when tab becomes visible (cross-browser prompt sync)
     // [#12] 不传force=true，受5秒防抖限制，避免频繁Alt-Tab触发大量请求
@@ -2352,3 +2295,215 @@ document.addEventListener('DOMContentLoaded', async function() {
         revealElements.forEach(function(el) { revealObserver.observe(el); });
     }
 });
+
+// ===== Knowledge Base Full Page =====
+function showKbPage() {
+    if (!currentAgentId) {
+        showToast('请先选择一个智能体');
+        return;
+    }
+    const chatContent = document.getElementById('chatContent');
+    const kbPage = document.getElementById('kbPage');
+    const sidebar = document.getElementById('sidebar');
+    const sidebarOverlay = document.getElementById('sidebarOverlay');
+    chatContent.style.display = 'none';
+    kbPage.style.display = 'flex';
+    // 隐藏侧边栏
+    if (sidebar) sidebar.style.display = 'none';
+    if (sidebarOverlay) sidebarOverlay.style.display = 'none';
+    // Update title
+    const agent = myAgents.find(a => a.id === currentAgentId);
+    const agentName = agent ? agent.name : '智能体';
+    document.getElementById('kbPageTitle').textContent = agentName + ' - 知识库管理';
+    document.getElementById('kbPageDesc').textContent = '上传和管理' + agentName + '相关文档，系统将自动进行向量化处理';
+    // Load docs
+    loadKbPageDocs();
+    // Setup drag and drop
+    setupKbPageDragDrop();
+}
+
+function hideKbPage() {
+    const chatContent = document.getElementById('chatContent');
+    const kbPage = document.getElementById('kbPage');
+    const sidebar = document.getElementById('sidebar');
+    kbPage.style.display = 'none';
+    chatContent.style.display = 'flex';
+    // 恢复侧边栏
+    if (sidebar) sidebar.style.display = '';
+    updateCenteredMode();
+}
+
+async function loadKbPageDocs() {
+    const listEl = document.getElementById('kbPageDocList');
+    if (!currentAgentId) {
+        listEl.innerHTML = '<div class="kb-doc-empty">请先选择一个智能体</div>';
+        return;
+    }
+    listEl.innerHTML = '<div class="kb-doc-empty">加载中...</div>';
+    try {
+        const resp = await fetch('/api/v1/documents?agent_id=' + encodeURIComponent(currentAgentId), { headers: apiHeaders() });
+        const data = await resp.json();
+        let docs = data.documents || data.files || [];
+        if (!Array.isArray(docs)) docs = [];
+        docs = docs.map(d => typeof d === 'string' ? d : (d.filename || d.name || d.title || String(d)));
+        
+        // Update stats
+        document.getElementById('kbStatDocCount').textContent = docs.length;
+        // Get chunk count from stats API
+        let totalChunks = 0;
+        try {
+            const chunkResp = await fetch('/api/v1/documents/stats?agent_id=' + encodeURIComponent(currentAgentId), { headers: apiHeaders() });
+            if (chunkResp.ok) {
+                const chunkData = await chunkResp.json();
+                totalChunks = chunkData.total_chunks || 0;
+            }
+        } catch(e) { console.warn('获取知识库统计失败', e); }
+        document.getElementById('kbStatChunkCount').textContent = totalChunks;
+        
+        if (docs.length === 0) {
+            listEl.innerHTML = '<div class="kb-doc-empty">暂无文档，请点击上方区域上传</div>';
+            return;
+        }
+        let html = '';
+        docs.forEach(docName => {
+            const ext = docName.split('.').pop().toLowerCase();
+            let iconHtml = '';
+            if (ext === 'pdf') {
+                iconHtml = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="1.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>';
+            } else if (ext === 'docx' || ext === 'doc') {
+                iconHtml = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>';
+            } else if (ext === 'xlsx' || ext === 'xls') {
+                iconHtml = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="1.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><rect x="8" y="12" width="8" height="6" rx="1"/></svg>';
+            } else {
+                iconHtml = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+            }
+            const safeName = escapeHtml(docName);
+            const safeNameForJs = docName.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            html += '<div class="kb-doc-item">' +
+                '<div class="kb-doc-icon">' + iconHtml + '</div>' +
+                '<div class="kb-doc-info">' +
+                '<div class="kb-doc-name" title="' + safeName + '">' + safeName + '</div>' +
+                '<div class="kb-doc-meta">' + ext.toUpperCase() + '</div>' +
+                '</div>' +
+                '<button class="kb-doc-delete-btn" onclick="deleteKbPageDoc(\'' + safeNameForJs + '\', this)" title="删除文档" aria-label="删除">' +
+                '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
+                ' 删除</button>' +
+                '</div>';
+        });
+        listEl.innerHTML = html;
+    } catch (e) {
+        console.error('加载知识库文档失败', e);
+        listEl.innerHTML = '<div class="kb-doc-empty">加载失败，请重试</div>';
+    }
+}
+
+async function onKbPageFileSelected(event) {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+    for (let i = 0; i < files.length; i++) {
+        await uploadToKbPage(files[i]);
+    }
+    event.target.value = '';
+    await loadKbPageDocs();
+}
+
+async function uploadToKbPage(file) {
+    const progressEl = document.getElementById('kbPageProgress');
+    const fileNameEl = document.getElementById('kbProgressFileName');
+    const barFill = document.getElementById('kbProgressBarFill');
+    const statusEl = document.getElementById('kbProgressStatus');
+    progressEl.style.display = 'block';
+    const agent = myAgents.find(a => a.id === currentAgentId);
+    const kbLabel = agent ? agent.name + ' 知识库' : '知识库';
+    fileNameEl.textContent = file.name + ' → ' + kbLabel;
+    barFill.style.width = '10%';
+    statusEl.textContent = '上传中...';
+    statusEl.className = 'kb-progress-status';
+    const formData = new FormData();
+    formData.append('file', file);
+    if (currentAgentId) formData.append('agent_id', currentAgentId);
+    try {
+        barFill.style.width = '30%';
+        const resp = await fetch('/api/v1/upload', { method: 'POST', body: formData, headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {} });
+        barFill.style.width = '80%';
+        const data = await resp.json();
+        if (resp.ok && (data.status === 'success' || data.filename)) {
+            barFill.style.width = '100%';
+            const chunks = data.detail?.chunks || data.chunks || 0;
+            statusEl.textContent = '上传成功！' + (chunks ? '共 ' + chunks + ' 个分块' : '');
+            statusEl.className = 'kb-progress-status success';
+        } else {
+            barFill.style.width = '100%';
+            barFill.style.background = '#ef4444';
+            statusEl.textContent = '上传失败：' + (data.detail || '未知错误');
+            statusEl.className = 'kb-progress-status error';
+        }
+    } catch (e) {
+        barFill.style.width = '100%';
+        barFill.style.background = '#ef4444';
+        statusEl.textContent = '网络错误，请重试';
+        statusEl.className = 'kb-progress-status error';
+    }
+    setTimeout(() => { progressEl.style.display = 'none'; barFill.style.background = ''; }, 3000);
+}
+
+async function deleteKbPageDoc(filename, btnEl) {
+    if (!confirm('确定删除文档「' + filename + '」？此操作不可恢复！')) return;
+    const docItem = btnEl.closest('.kb-doc-item');
+    btnEl.disabled = true;
+    btnEl.textContent = '删除中...';
+    try {
+        const agentParam = currentAgentId ? '?agent_id=' + encodeURIComponent(currentAgentId) : '';
+        const resp = await fetch('/api/v1/documents/' + encodeURIComponent(filename) + agentParam, { method: 'DELETE', headers: apiHeaders() });
+        const data = await resp.json();
+        if (data.status === 'success') {
+            docItem.style.transition = 'all 0.3s';
+            docItem.style.opacity = '0';
+            docItem.style.transform = 'translateX(20px)';
+            setTimeout(() => {
+                docItem.remove();
+                const list = document.getElementById('kbPageDocList');
+                if (list.children.length === 0) list.innerHTML = '<div class="kb-doc-empty">暂无文档，请点击上方区域上传</div>';
+                // Update stats
+                const countEl = document.getElementById('kbStatDocCount');
+                const current = parseInt(countEl.textContent) || 0;
+                countEl.textContent = Math.max(0, current - 1);
+            }, 300);
+        } else {
+            showToast('删除失败：' + (data.detail?.message || data.message || '未知错误'));
+            btnEl.disabled = false;
+            btnEl.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg> 删除';
+        }
+    } catch (e) {
+        showToast('删除失败：网络错误');
+        btnEl.disabled = false;
+        btnEl.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg> 删除';
+    }
+}
+
+function setupKbPageDragDrop() {
+    const zone = document.getElementById('kbPageUploadZone');
+    if (!zone) return;
+    zone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        zone.classList.add('drag-over');
+    });
+    zone.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        zone.classList.remove('drag-over');
+    });
+    zone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        zone.classList.remove('drag-over');
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) {
+            for (let i = 0; i < files.length; i++) {
+                uploadToKbPage(files[i]);
+            }
+            setTimeout(() => loadKbPageDocs(), 1500);
+        }
+    });
+}
