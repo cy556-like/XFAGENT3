@@ -62,7 +62,7 @@ class Settings:
 
     # DeepSeek / 豆包 独立配置（火山引擎Ark）
     DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", os.getenv("LLM_API_KEY", ""))
-    DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3")
+    DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
 
     # 千问独立配置（阿里云DashScope）
     QWEN_API_KEY: str = os.getenv("QWEN_API_KEY", "")
