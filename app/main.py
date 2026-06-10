@@ -7,6 +7,34 @@ FastAPI 应用主入口
 - [#24] 健康检查增强：检查 ChromaDB/LLM API/磁盘等依赖
 - [#25] 优雅关闭：graceful shutdown 处理流式连接
 """
+
+# ===================================================================
+# [BUG FIX v2] Windows 控制台 Quick Edit 冻结修复
+# Windows cmd.exe 默认启用 Quick Edit 模式（快速编辑模式）。
+# 在控制台窗口内点击鼠标会进入「标记」模式，此时 Windows
+# 会将整个进程挂起，导致 HTTP 服务无响应。按回车键可解除挂起。
+#
+# 修复方案：彻底禁用 ENABLE_QUICK_EDIT_MODE 标志位。
+# 用户仍可通过 右键标题栏 → 编辑 → 标记 来选中复制文字。
+# ===================================================================
+import sys as _sys
+if _sys.platform == "win32":
+    import ctypes as _ctypes
+    try:
+        _STD_INPUT_HANDLE = -10
+        _ENABLE_QUICK_EDIT_MODE = 0x0040
+        _ENABLE_EXTENDED_FLAGS = 0x0080
+        _kernel32 = _ctypes.windll.kernel32
+        _h_in = _kernel32.GetStdHandle(_STD_INPUT_HANDLE)
+        if _h_in and _h_in != -1:  # -1 = INVALID_HANDLE_VALUE
+            _mode = _ctypes.c_ulong()
+            if _kernel32.GetConsoleMode(_h_in, _ctypes.byref(_mode)):
+                # 彻底关闭 Quick Edit 模式，防止鼠标点击冻结进程
+                _new_mode = (_mode.value & ~_ENABLE_QUICK_EDIT_MODE) | _ENABLE_EXTENDED_FLAGS
+                _kernel32.SetConsoleMode(_h_in, _new_mode)
+    except Exception:
+        pass
+
 import os
 import sys
 import time
@@ -269,7 +297,6 @@ def create_app() -> FastAPI:
                     
                     # 2. 清理过期的导出文件（超过24小时的）
                     try:
-                        from app.rag.document import cleanup_export_files
                         export_dir = os.path.join(settings.DATA_DIR, "export")
                         if os.path.exists(export_dir):
                             cleaned_files = 0
