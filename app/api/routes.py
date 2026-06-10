@@ -108,7 +108,7 @@ async def _sse_stream_wrapper(generator_factory, request: Request, session_id: s
     _record_request(endpoint, time.time() - start_time)
     if cancelled_by_client:
         logger.info(f"SSE流完成（客户端主动断开）: session={session_id}")
-from app.rag.document import index_document, search_documents, list_indexed_documents, delete_document, update_document, delete_agent_collection, list_all_collections, load_document, export_document_as_docx, reindex_all_documents, get_indexing_mode, _get_export_dir, cleanup_export_files
+from app.rag.document import index_document, search_documents, list_indexed_documents, delete_document, update_document, delete_agent_collection, list_all_collections, load_document, export_document_as_docx, reindex_all_documents, get_indexing_mode, _get_export_dir, cleanup_export_files, _load_keyword_index, get_vector_store
 from app.auth.user_manager import login_user, register_user
 from app.auth.jwt_handler import create_token, verify_token, get_username_from_token
 from app.memory.manager import (
@@ -654,6 +654,57 @@ async def list_documents(
         "total_pages": (total + page_size - 1) // page_size,
     }
 
+
+
+
+@router.get("/documents/stats", summary="获取知识库统计信息")
+async def get_document_stats(
+    agent_id: str = Query(None, description="智能体ID，为空时查全局知识库"),
+):
+    """获取知识库的文档数量和文本片段总数（按智能体隔离）
+    
+    统计来源：
+    1. ChromaDB 向量索引中的分块数
+    2. 关键词索引中的条目数
+    取两者中较大的值作为总数
+    """
+    if not agent_id:
+        return {"total_documents": 0, "total_chunks": 0, "indexing_mode": "none"}
+    
+    total_chunks = 0
+    indexing_mode = "none"
+    
+    # 1. 从 ChromaDB 获取分块数
+    vector_store = get_vector_store(agent_id=agent_id)
+    if vector_store is not None:
+        try:
+            collection = vector_store._collection
+            chunk_count = collection.count()
+            if chunk_count > 0:
+                total_chunks = chunk_count
+                indexing_mode = "vector"
+        except Exception as e:
+            logger.warning(f"获取ChromaDB分块数失败: {e}")
+    
+    # 2. 从关键词索引获取条目数
+    try:
+        keyword_index = _load_keyword_index(agent_id)
+        keyword_count = len(keyword_index)
+        if keyword_count > total_chunks:
+            total_chunks = keyword_count
+            indexing_mode = "keyword"
+    except Exception as e:
+        logger.warning(f"获取关键词索引条目数失败: {e}")
+    
+    # 3. 获取文档数量
+    docs = list_indexed_documents(agent_id=agent_id)
+    total_documents = len(docs)
+    
+    return {
+        "total_documents": total_documents,
+        "total_chunks": total_chunks,
+        "indexing_mode": indexing_mode,
+    }
 
 @router.put("/documents/{filename}", summary="修改知识库文档内容")
 async def modify_document_api(filename: str, req: ModifyDocumentRequest):
