@@ -16,25 +16,15 @@ load_dotenv()
 # 可用的 LLM 模型列表
 AVAILABLE_MODELS = [
     # DeepSeek 系列（火山引擎）
-    {"id": "ep-20260604175402-5665h", "name": "DeepSeek-V4-Pro", "desc": "DeepSeek旗舰，128K上下文"},
-    {"id": "ep-20260604180137-8xxll", "name": "DeepSeek-V4-Flash", "desc": "DeepSeek快速版，性价比高"},
-    # GLM-5 系列（最新）
+    {"id": "DeepSeek-V4-Flash", "name": "DeepSeek-V4-Flash", "desc": "DeepSeek快速版，性价比高"},
+    # GLM 系列（智谱AI）
     {"id": "glm-5.1", "name": "GLM-5.1", "desc": "最新旗舰，Coding对齐Claude Opus 4.6"},
-    {"id": "glm-5-turbo", "name": "GLM-5-Turbo", "desc": "高智能基座，Agent能力SOTA"},
-    {"id": "glm-5", "name": "GLM-5", "desc": "高智能基座，编程对齐Claude Opus 4.5"},
-    # GLM-4.7 系列
-    {"id": "glm-4.7", "name": "GLM-4.7", "desc": "高性能，综合能力提升"},
-    {"id": "glm-4.7-flash", "name": "GLM-4.7-Flash", "desc": "快速版，性价比高"},
-    # GLM-4V 视觉系列（支持图片分析）
-    {"id": "glm-4v-plus", "name": "GLM-4V-Plus", "desc": "视觉旗舰，图片分析首选"},
-    {"id": "glm-4v", "name": "GLM-4V", "desc": "视觉模型，支持图片理解"},
-    # GLM-4 系列（经典）
-    {"id": "glm-4-plus", "name": "GLM-4-Plus", "desc": "高性能，复杂任务首选"},
-    {"id": "glm-4-long", "name": "GLM-4-Long", "desc": "超长上下文，支持128K"},
-    {"id": "glm-4-flash", "name": "GLM-4-Flash", "desc": "最快，适合日常对话"},
-    {"id": "glm-4-air", "name": "GLM-4-Air", "desc": "均衡，速度与质量兼顾"},
-    {"id": "glm-4-air-0111", "name": "GLM-4-Air-0111", "desc": "Air升级版，效果更好"},
-    {"id": "glm-4", "name": "GLM-4", "desc": "经典旗舰模型"},
+    # 豆包系列（火山引擎）
+    {"id": "Doubao-Seed-2.0-pro", "name": "Doubao-Seed-2.0-Pro", "desc": "豆包旗舰，火山引擎"},
+    # 千问系列（阿里云）
+    {"id": "qwen3.7-plus", "name": "Qwen3.7-Plus", "desc": "千问旗舰，阿里云DashScope"},
+    # MiMo系列（小米）
+    {"id": "mimo-v2.5-pro", "name": "MiMo-V2.5-Pro", "desc": "小米旗舰，MiMo推理模型"},
 ]
 
 # 支持图片分析的视觉模型列表
@@ -43,27 +33,44 @@ VISION_MODELS = {"glm-4v-plus", "glm-4v", "glm-4v-flash"}
 DEFAULT_VISION_MODEL = "glm-4v-plus"
 
 # 快速模型列表（用于意图路由，加速简单问题的响应）
-FAST_MODELS = {"glm-4-flash", "glm-4-air", "glm-4-air-0111", "glm-4.7-flash"}
+FAST_MODELS = {"DeepSeek-V4-Flash"}
 
-# DeepSeek 模型列表（走火山引擎API）
-DEEPSEEK_MODELS = {"ep-20260604175402-5665h", "ep-20260604180137-8xxll"}
+# 火山引擎模型列表（走火山引擎Ark API，包括DeepSeek和豆包）
+VOLCENGINE_MODELS = {"DeepSeek-V4-Flash", "Doubao-Seed-2.0-pro"}
+
+# DeepSeek 模型列表（兼容旧代码引用，走火山引擎API）
+DEEPSEEK_MODELS = {"DeepSeek-V4-Flash"}
+
+# 千问模型列表（走阿里云DashScope API）
+QWEN_MODELS = {"qwen3.7-plus"}
+
+# MiMo模型列表（走小米MiMo API）
+MIMO_MODELS = {"mimo-v2.5-pro"}
 
 
 class Settings:
     """应用配置（[#22] 支持运行时热更新）"""
 
-    # LLM 配置
+    # LLM 配置（智谱AI默认）
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
-    LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api.xixixixi.cloud/v1")
-    LLM_MODEL: str = os.getenv("LLM_MODEL", "glm-5-turbo")
+    LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "glm-5.1")
 
     # LLM 备用配置（主Key失效时自动切换）
     LLM_API_KEY_BACKUP: str = os.getenv("LLM_API_KEY_BACKUP", "")
     LLM_BASE_URL_BACKUP: str = os.getenv("LLM_BASE_URL_BACKUP", "")
 
-    # DeepSeek 独立配置（火山引擎Ark）
+    # DeepSeek / 豆包 独立配置（火山引擎Ark）
     DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", os.getenv("LLM_API_KEY", ""))
-    DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
+    DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3")
+
+    # 千问独立配置（阿里云DashScope）
+    QWEN_API_KEY: str = os.getenv("QWEN_API_KEY", "")
+    QWEN_BASE_URL: str = os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+
+    # MiMo独立配置（小米）
+    MIMO_API_KEY: str = os.getenv("MIMO_API_KEY", "")
+    MIMO_BASE_URL: str = os.getenv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1")
 
     # Embedding 模型
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "embedding-3")
